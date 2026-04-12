@@ -98,7 +98,16 @@ function CalendarsPage({ ctx }) {
   }
 
   // Sub-feature: Calendar Color Picker (localStorage only — not in DB)
-  function handleColorChange(calId, newColor) {
+  async function handleColorChange(calId, newColor) {
+    const hex = newColor.replace("#", "");
+    const cal = myCalendars().find(c => c.id === calId);
+    // For subscribed calendars, persist color to server via UpdateSubscribedMetadata
+    if (cal && !cal.isOwner) {
+      try {
+        await calApi("UpdateSubscribedMetadata", { id: calId, color: hex }, sessionId);
+      } catch(e) { showToast("Failed to save color: " + e.message, "error"); return; }
+    }
+    // For owned calendars, color is set at Create time; changing later is local only
     const prefs = loadCalPrefs();
     prefs[calId] = { ...(prefs[calId] || {}), color: newColor };
     saveCalPrefs(prefs);
@@ -306,6 +315,7 @@ function CreateCalendarModal({ ctx }) {
         name:         form.name,
         description:  form.description || undefined,
         members_only: form.membersOnly,
+        color:        form.color.replace("#", ""),
         ical: btoa("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//USCCalendar//EN\r\nEND:VCALENDAR"),
       }, sessionId);
       showToast(`"${form.name}" created!`);
@@ -454,7 +464,7 @@ function ManageCalendarModal({ ctx, calendar }) {
       await calApi("UpdateMetadata", {
         id: calendar.id, name: metaName, description: metaDesc, members_only: metaOnly,
       }, sessionId);
-      // ⚠️ Color is stored in localStorage only — not sent to the server
+      // Color for owned calendars is set at creation; update localStorage for display
       const p = loadCalPrefs();
       p[calendar.id] = { ...(p[calendar.id] || {}), color };
       saveCalPrefs(p);

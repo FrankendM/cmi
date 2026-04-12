@@ -130,7 +130,7 @@ async function fetchAllCalendars(sid, calPrefs) {
         } catch(e) {}
       }
       calendars.push({ id, name:calRes.name, description:calRes.description||"", membersOnly:calRes.members_only||false,
-        isOwner, codes, color:prefs.color||pickColor(id), type:prefs.type||(isOwner?"personal":"shared") });
+        isOwner, codes, color:"#"+(calRes.color||prefs.color||pickColor(id).replace("#","")), type:prefs.type||(isOwner?"personal":"shared") });
       const calEvents=icalToEvents(calRes.ical,id); calEvents.forEach(e=>{e.calendarId=id;}); events.push(...calEvents);
     } catch(e) {}
   }));
