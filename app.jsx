@@ -179,17 +179,22 @@ function App() {
     finally { setDataLoading(false); }
   }
 
-  useEffect(() => {
+useEffect(() => {
   const saved = loadSession();
+  console.log("Saved session:", saved); 
   if (!saved) { setAuthLoading(false); return; }
+
   apiCall("/users.v1.UserService/Get", {}, saved)
     .then(profile => {
+      console.log("Profile response:", profile); 
       const u = buildUser(profile, saved);
+      console.log("Built user:", u);
       setCurrentUser(u);
       setSessionId(saved);
       loadAllData(saved, saved);
     })
     .catch((e) => {
+      console.error("Auth error:", e.status, e.message); 
       if (e.status === 401 || e.status === 403) clearSession();
     })
     .finally(() => setAuthLoading(false));
