@@ -1,6 +1,6 @@
 // ============================================================
 //  calendarView.jsx — Calendar & Event Management
-//
+//asdasd
 //  Components:
 //    CalendarPage         — monthly grid calendar view
 //    EventsPage           — upcoming/past events list
