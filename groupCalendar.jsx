@@ -68,6 +68,18 @@ function CalendarsPage({ ctx }) {
     } catch(e) { showToast(e.message || "Failed to delete.", "error"); }
   }
 
+
+  // Sub-feature: Delete Calendar
+  async function handleDelete(cal) {
+    if (!cal.isOwner) { showToast("You don't own this.", "error"); return; }
+    if (!window.confirm(`Delete "${cal.name}"? This cannot be undone.`)) return;
+    try {
+      await calApi("Delete", { id: cal.id }, sessionId);
+      showToast(`Deleted "${cal.name}"`);
+      refreshCalendars();
+    } catch(e) { showToast(e.message || "Failed to delete.", "error"); }
+  }
+
   // Sub-feature: Calendar Color Picker (localStorage only — not in DB)
   async function handleColorChange(calId, newColor) {
     const hex = newColor.replace("#", "");
