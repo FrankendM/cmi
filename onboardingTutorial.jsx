@@ -49,8 +49,8 @@ const TUTORIAL_STEPS = [
   {
     title:    "Your Dashboard",
     body:     "This is your home base — today's events, upcoming items, and a live task progress summary all in one place.",
-    target:   "[data-tutorial='dashboard-greeting']",
-    position: "bottom",
+    target:   ".content",
+    position: "left",
   },
   {
     title:    "My Calendars — Start Here",
@@ -387,7 +387,7 @@ function OnboardingTutorial({ userId, userName, onDismiss }) {
         {/* Footer navigation */}
         <div style={{
           display:"flex", alignItems:"center",
-          justifyContent:"space-between",
+          justifyContent:"space-between", flexWrap:"nowrap",
           padding:"8px 20px 14px", gap:8,
         }}>
           <button
@@ -398,7 +398,7 @@ function OnboardingTutorial({ userId, userName, onDismiss }) {
             ← Back
           </button>
 
-          <span style={{ fontSize:11, color:"var(--text3)", fontWeight:600, letterSpacing:0.4 }}>
+          <span style={{ fontSize:11, color:"var(--text3)", fontWeight:600, letterSpacing:0.4, whiteSpace:"nowrap" }}>
             {step + 1} / {total}
           </span>
 
