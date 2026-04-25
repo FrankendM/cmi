@@ -372,13 +372,10 @@ function AuthPage({ onLogin }) {
     setError(""); setLoading(true);
     try {
       const r = await apiCall("/users.v2.UserService/LoginUser", { email, password });
-      const sid = r.sessionId;
-      const uid = r.userId;
+      const sid = r.sessionToken;
       if (!sid) throw new Error("No session returned.");
-      if (!uid) throw new Error("No user ID returned.");
-      // Fetch full profile via GetSessionUserID → GetUser
-      let profile = { userId: uid };
-      try { profile = await fetchUserProfile(sid); } catch(e) {}
+      // LoginUserResponse has no user_id — resolve it via GetSessionUserID → GetUser
+      const profile = await fetchUserProfile(sid);
       const user = buildUser(profile, sid);
       const finalUser = user.email ? user : { ...user, email, name: email, userType: "student" };
       // Existing login — isNewUser=false (default), tutorial will NOT fire
@@ -394,20 +391,22 @@ function AuthPage({ onLogin }) {
       const body = { email, password, firstName, lastName };
       if (middleName) body.middleName = middleName;
       const r = await apiCall("/users.v2.UserService/CreateUser", body);
-      const sid = r.sessionId;
+      const sid = r.sessionToken;
       const uid = r.userId;
       if (!sid) throw new Error("Registration failed.");
-      if (!uid) throw new Error("No user ID returned.");
-      // Fetch full profile via GetSessionUserID → GetUser
-      let profile = { userId: uid };
-      try { profile = await fetchUserProfile(sid); } catch(e) {}
-      const user = buildUser(profile, sid);
-      const finalUser = (user.first_name || user.last_name) ? user : {
-        id: uid, sessionId: sid, email,
-        name: [firstName, middleName, lastName].filter(Boolean).join(" ") || email,
-        first_name: firstName, last_name: lastName, middle_name: middleName,
-        userType: "student",
-      };
+      // Fetch full profile; fall back to form values if profile fetch fails
+      let finalUser;
+      try {
+        const profile = await fetchUserProfile(sid);
+        finalUser = buildUser(profile, sid);
+      } catch(e) {
+        finalUser = {
+          id: uid, sessionId: sid, email,
+          name: [firstName, middleName, lastName].filter(Boolean).join(" ") || email,
+          first_name: firstName, last_name: lastName, middle_name: middleName,
+          userType: "student",
+        };
+      }
       // ✅ isNewUser=true — triggers the onboarding tutorial in App
       onLogin(finalUser, sid, true);
     } catch(e) { setError(e.message || "Registration failed. That email may already be in use."); }
