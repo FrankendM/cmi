@@ -20,6 +20,7 @@ function CalendarPage({ ctx }) {
   const { myEvents, myCalendars, setModal } = ctx;
   const [viewDate, setViewDate]         = React.useState(new Date());
   const [selectedCals, setSelectedCals] = React.useState(null);
+  const [showTasks, setShowTasks] = React.useState(false);
 
   const cals        = myCalendars();
   const visibleCals = selectedCals || cals.map(c => c.id);
@@ -36,7 +37,7 @@ function CalendarPage({ ctx }) {
   while (cells.length % 7 !== 0)
     cells.push({ date: new Date(year, month+1, cells.length-daysInMonth-firstDay+1), isOtherMonth:true });
 
-  const allEvts = myEvents().filter(e => visibleCals.map(strId).includes(strId(e.calendarId)) && !(e.title||"").startsWith("TASK:"));
+  const allEvts = myEvents().filter(e => visibleCals.map(strId).includes(strId(e.calendarId)) && (showTasks || !(e.title||"").startsWith("TASK:")));
   const today   = new Date();
   const monthNames = [
     "January","February","March","April","May","June",
@@ -46,7 +47,7 @@ function CalendarPage({ ctx }) {
   return (
     <div>
       {/* Sub-feature: Calendar Filter Toggle — click a pill to show/hide a calendar */}
-      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14 }}>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14, alignItems:"center" }}>
         {cals.map(c => {
           const active = visibleCals.includes(c.id);
           return (
@@ -71,6 +72,16 @@ function CalendarPage({ ctx }) {
           <button className="btn-icon btn-sm" onClick={() => setSelectedCals(null)}
             style={{ fontSize:11, padding:"4px 8px" }}>Reset</button>
         )}
+        <div onClick={() => setShowTasks(t => !t)}
+          style={{
+            display:"flex", alignItems:"center", gap:5, padding:"4px 10px", borderRadius:20,
+            background: showTasks ? "rgba(251,191,36,0.12)" : "transparent",
+            border: `1.5px solid ${showTasks ? "var(--yellow)" : "var(--border)"}`,
+            cursor:"pointer", flexShrink:0,
+          }}>
+          <span style={{ width:7, height:7, borderRadius:"50%", background: showTasks ? "var(--yellow)" : "var(--text3)" }} />
+          <span style={{ fontSize:11, fontWeight:500, color: showTasks ? "var(--yellow)" : "var(--text3)" }}>Tasks</span>
+        </div>
       </div>
 
       {/* Month navigation header */}
@@ -104,13 +115,15 @@ function CalendarPage({ ctx }) {
                 onClick={() => setModal({ type:"day-events", data:{ date:cell.date } })}>
                 <div className="cal-date">{cell.date.getDate()}</div>
                 {show.map(e => {
+                  const isTask = (e.title || "").startsWith("TASK:");
                   const cal = cals.find(c => c.id === e.calendarId);
-                  const evColor = cal?.color || "var(--accent)";
+                  const evColor = isTask ? "var(--yellow)" : (cal?.color || "var(--accent)");
                   return (
                     <div key={e.id} className="cal-event"
                       style={{ borderLeft:`2px solid ${evColor}`, background:`${evColor}28`, color:evColor }}
                       onClick={ev => { ev.stopPropagation(); setModal({ type:"event-detail", data:e }); }}>
-                      {e.isImportant ? "⭐ " : ""}{e.title}
+                      <span style={{ opacity: 0.75, fontWeight: 500, marginRight: 3 }}>{fmtTime(e.startTime)} ·</span>
+                      {e.isImportant ? "⭐ " : ""}{(e.title || "").replace("TASK:", "TASK: ")}
                     </div>
                   );
                 })}

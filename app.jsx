@@ -60,6 +60,10 @@ const CAL_BASE       = "/calendars.v2.CalendarService";
 const CAL_WRITE_BASE = "/calendars.v2.CalendarWriteService";
 const calApi      = (endpoint, body, sid) => apiCall(`${CAL_BASE}/${endpoint}`, body, sid);
 const calWriteApi = (endpoint, body, sid) => apiCall(`${CAL_WRITE_BASE}/${endpoint}`, body, sid);
+const AI_BASE  = "/ai.v2.AIService";
+const OCR_BASE = "/ocr.v2.OCRService";
+const aiApi    = (endpoint, body, sid) => apiCall(`${AI_BASE}/${endpoint}`, body, sid);
+const ocrApi   = (endpoint, body, sid) => apiCall(`${OCR_BASE}/${endpoint}`, body, sid);
 
 // iCal encode/decode helpers — used by CstmCal.jsx for event API calls
 function eventsToIcal(events) {
@@ -134,6 +138,19 @@ function saveUD(uid, k, v)  { try { localStorage.setItem(userKey(uid,k),JSON.str
 function loadCalPrefs(userId)      { return loadUD(userId, "cal_prefs", {}); }
 function saveCalPrefs(userId, obj) { saveUD(userId, "cal_prefs", obj); }
 
+// Audit log — per calendar, localStorage only
+function loadAuditLog(calId) {
+  try { const r = localStorage.getItem(`usc_audit_${calId}`); return r ? JSON.parse(r) : []; } catch(e) { return []; }
+}
+function saveAuditLog(calId, log) {
+  try { localStorage.setItem(`usc_audit_${calId}`, JSON.stringify(log)); } catch(e) {}
+}
+function addAuditEntry(calId, entry) {
+  const log = loadAuditLog(calId);
+  log.unshift({ ...entry, timestamp: new Date().toISOString() });
+  saveAuditLog(calId, log.slice(0, 100)); // keep last 100 entries
+}
+
 // Tutorial seen flag — per user, localStorage only
 function hasTutorialBeenSeen(userId) {
   try { return localStorage.getItem(`usc_${userId}_tutorial_seen`) === "1"; } catch(e) { return true; }
@@ -145,7 +162,7 @@ function fmtTime(iso) { return new Date(iso).toLocaleTimeString([],{hour:"2-digi
 function fmtDate(iso) { return new Date(iso).toLocaleDateString("en-PH",{month:"short",day:"numeric",year:"numeric"}); }
 function sameDay(a,b) { const da=new Date(a),db=new Date(b); return da.getFullYear()===db.getFullYear()&&da.getMonth()===db.getMonth()&&da.getDate()===db.getDate(); }
 function avatarColor(name) { const c=["#6c63ff","#34d399","#fbbf24","#f472b6","#60a5fa","#fb923c"]; let h=0; for(const ch of (name||"?")) h=(h+ch.charCodeAt(0))%c.length; return c[h]; }
-const PALETTE = ["#6c63ff","#34d399","#fbbf24","#f472b6","#60a5fa","#fb923c","#f87171","#2dd4bf"];
+const PALETTE = ["#6c63ff","#34d399","#f472b6","#60a5fa","#fb923c","#f87171","#2dd4bf"];
 function pickColor(id) { return PALETTE[Math.abs(id||0) % PALETTE.length]; }
 
 // buildUser reads user_id from the profile object (set by fetchUserProfile)
@@ -202,7 +219,7 @@ async function fetchAllCalendars(sid, calPrefs, userId) {
       const calRes = await calApi("GetCalendar", { calendarId: Number(id) }, sid);
       const isOwner = strId(calRes.ownerUserId) === strId(userId);
       const prefs   = calPrefs[id] || {};
-      const color   = "#" + (calRes.color || prefs.color || pickColor(id).replace("#", ""));
+      const color = prefs.color || pickColor(id);
       calendars.push({
         id, name: calRes.name, description: calRes.description || "",
         isOwner, codes: [], color,
@@ -298,7 +315,6 @@ function App() {
           const calRes = await calApi("CreateCalendar", {
             name: "My Calendar",
             description: "My personal calendar",
-            color: "6c63ff",
             ical: icalB64,
           }, sid);
           if (calRes && calRes.calendarId) addOwnedCalendarId(user.id, String(calRes.calendarId));
@@ -365,6 +381,7 @@ function App() {
           {page==="calendars"      && <CalendarsPage     ctx={ctx} />}
           {page==="events"         && <EventsPage        ctx={ctx} />}
           {page==="tasks"          && <TaskTrackerPage   ctx={ctx} />}
+          {page==="ai"             && <AIServicesPage    ctx={ctx} />}
           {page==="settings"       && <SettingsPage      ctx={ctx} />}
         </div>
         <BottomNav page={page} setPage={navigateTo} />
@@ -503,9 +520,10 @@ function Sidebar({ page, setPage, ctx, isOpen }) {
   const navItems = [
     {id:"dashboard",    icon:"⊞",  label:"Dashboard"},
     {id:"calendar",     icon:"📅", label:"Calendar View"},
-    {id:"events",       icon:"🗓",  label:"My Events"},
-    {id:"calendars",    icon:"📚", label:"My Calendars"},
+    {id:"events",       icon:"🗓",  label:"Events List"},
+    {id:"calendars",    icon:"📚", label:"Manage Calendars"},
     {id:"tasks",        icon:"✅", label:"Task Tracker"},
+    {id:"ai",           icon:"✨", label:"AI Tools"},
     {id:"settings",     icon:"⚙️", label:"Settings"},
   ];
   return (
@@ -544,7 +562,7 @@ function Sidebar({ page, setPage, ctx, isOpen }) {
 
 // ─── TOPBAR ───────────────────────────────────────────────────────────────────
 function Topbar({ page, ctx, setPage, onMenuClick }) {
-  const titles = {dashboard:"Dashboard",calendar:"Calendar View",events:"My Events",calendars:"My Calendars",tasks:"Task Tracker",settings:"Settings"};
+  const titles = {dashboard:"Dashboard",calendar:"Calendar View",events:"Events List",calendars:"Manage Calendars",tasks:"Task Tracker",ai:"AI Tools",settings:"Settings"};
   const { dataLoading, refreshCalendars, theme, toggleTheme } = ctx;
   return (
     <div className="topbar">
@@ -814,8 +832,9 @@ function DayEventsModal({ ctx, date }) {
                 <div style={{fontSize:13,color:"var(--text3)"}}>Tap the button above to add one!</div>
               </div>
             : dayEvts.map(e => {
-                const cal = cals.find(c=>strId(c.id)===strId(e.calendarId));
-                const evColor = cal?.color || "var(--accent)";
+                    const isTask = (e.title || "").startsWith("TASK:");
+                    const cal = cals.find(c=>strId(c.id)===strId(e.calendarId));
+                    const evColor = isTask ? "var(--yellow)" : (cal?.color || "var(--accent)");
                 return (
                   <div key={e.id} className="event-item"
                     style={{borderLeft:`3px solid ${evColor}`,paddingLeft:14,marginBottom:4,borderRadius:"0 8px 8px 0",cursor:"pointer"}}

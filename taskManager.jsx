@@ -94,8 +94,8 @@ function eventToTask(ev) {
 function taskToEvent(task, calendarId) {
   const descFull = encodeDesc(task.description, task.checklist, task.status);
   const dueDate  = task.dueDate || new Date().toISOString().slice(0, 10);
-  const startISO = new Date(`${dueDate}T00:00:00`).toISOString();
-  const endISO   = new Date(`${dueDate}T01:00:00`).toISOString();
+  const startISO = new Date(`${dueDate}T12:00:00`).toISOString();
+  const endISO   = new Date(`${dueDate}T13:00:00`).toISOString();
   return {
     id:         task.id || uid_gen(),
     calendarId,
@@ -211,7 +211,7 @@ function TaskTrackerPage({ ctx }) {
       try {
         const newEvents   = toMigrate.map(t => taskToEvent({ ...t, id: t.id || uid_gen() }, cal.id));
         const calEvts     = [...events.filter(e => e.calendarId === cal.id), ...newEvents];
-        await calApi("Replace", { id: cal.id, ical: eventsToIcalB64(calEvts) }, sessionId);
+        await calApi("WriteCalendar", { calendarId: Number(cal.id), ical: eventsToIcalB64(calEvts) }, sessionId);
         setEvents(prev => [...prev, ...newEvents]);
         // Remove legacy localStorage entries now that migration succeeded
         legacyKeys.forEach(k => { try { localStorage.removeItem(k); } catch(e) {} });
@@ -262,8 +262,7 @@ function TaskTrackerPage({ ctx }) {
       const newEvent = taskToEvent(taskObj, cal.id);
       let calEvts    = events.filter(e => e.calendarId === cal.id);
       calEvts = editId ? calEvts.map(e => e.id===editId ? newEvent : e) : [...calEvts, newEvent];
-      await calApi("Replace", { id:cal.id, ical:eventsToIcalB64(calEvts) }, sessionId);
-      setEvents(prev => editId ? prev.map(e => e.id===editId ? newEvent : e) : [...prev, newEvent]);
+      await calApi("WriteCalendar", { calendarId: Number(cal.id), ical: eventsToIcalB64(calEvts) }, sessionId);      setEvents(prev => editId ? prev.map(e => e.id===editId ? newEvent : e) : [...prev, newEvent]);
       showToast(editId ? "Task updated!" : "Task created!");
       setShowForm(false);
     } catch(e) { setFormError(e.message || "Failed to save."); }
@@ -278,8 +277,7 @@ function TaskTrackerPage({ ctx }) {
     const newEvent  = taskToEvent({...task, checklist:newCL, status:newStatus}, cal.id);
     try {
       const calEvts = events.filter(e=>e.calendarId===cal.id).map(e=>e.id===taskId?newEvent:e);
-      await calApi("Replace",{id:cal.id,ical:eventsToIcalB64(calEvts)},sessionId);
-      setEvents(prev=>prev.map(e=>e.id===taskId?newEvent:e));
+      await calApi("WriteCalendar", { calendarId: Number(cal.id), ical: eventsToIcalB64(calEvts) }, sessionId);      setEvents(prev=>prev.map(e=>e.id===taskId?newEvent:e));
     } catch(e) { showToast("Failed to update.","error"); }
   }
 
@@ -289,7 +287,7 @@ function TaskTrackerPage({ ctx }) {
     const newEvent = taskToEvent({...task,status},cal.id);
     try {
       const calEvts = events.filter(e=>e.calendarId===cal.id).map(e=>e.id===taskId?newEvent:e);
-      await calApi("Replace",{id:cal.id,ical:eventsToIcalB64(calEvts)},sessionId);
+      await calApi("WriteCalendar", { calendarId: Number(cal.id), ical: eventsToIcalB64(calEvts) }, sessionId);
       setEvents(prev=>prev.map(e=>e.id===taskId?newEvent:e));
     } catch(e) { showToast("Failed to update.","error"); }
   }
@@ -298,7 +296,7 @@ function TaskTrackerPage({ ctx }) {
     const cal = getTaskCal(); if (!cal) return;
     try {
       const calEvts = events.filter(e=>e.calendarId===cal.id&&e.id!==taskId);
-      await calApi("Replace",{id:cal.id,ical:eventsToIcalB64(calEvts)},sessionId);
+      await calApi("WriteCalendar", { calendarId: Number(cal.id), ical: eventsToIcalB64(calEvts) }, sessionId);
       setEvents(prev=>prev.filter(e=>e.id!==taskId));
       showToast("Task deleted.");
     } catch(e) { showToast("Failed to delete.","error"); }

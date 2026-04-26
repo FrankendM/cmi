@@ -35,6 +35,7 @@ function CalendarsPage({ ctx }) {
     try {
       await calApi("DeleteCalendar", { calendarId: cal.id }, sessionId);
       removeCalendarId(currentUser.id, cal.id);
+      addAuditEntry(cal.id, { name: currentUser.name, action: "deleted calendar" });
       showToast(`Deleted "${cal.name}"`);
       refreshCalendars();
     } catch(e) { showToast(e.message || "Failed to delete.", "error"); }
@@ -43,9 +44,9 @@ function CalendarsPage({ ctx }) {
   // Sub-feature: Calendar Color Picker — persisted to server via UpdateCalendarMetadata
   async function handleColorChange(calId, newColor) {
     const hex = newColor.replace("#", "");
-    try {
-      await calApi("UpdateCalendarMetadata", { calendarId: calId, color: hex }, sessionId);
-    } catch(e) { showToast("Failed to save color: " + e.message, "error"); return; }
+    //try {
+      //await calApi("UpdateCalendarMetadata", { calendarId: calId, color: hex }, sessionId);
+    //} catch(e) { showToast("Failed to save color: " + e.message, "error"); return; }
     const prefs = loadCalPrefs();
     prefs[calId] = { ...(prefs[calId] || {}), color: newColor };
     saveCalPrefs(prefs);
@@ -143,7 +144,6 @@ function CreateCalendarModal({ ctx }) {
       const res = await calApi("CreateCalendar", {
         name:        form.name,
         description: form.description || undefined,
-        color:       form.color.replace("#", ""),
         ical:        icalB64,
       }, sessionId);
       // Track the new calendar ID locally
@@ -220,7 +220,6 @@ function ManageCalendarModal({ ctx, calendar }) {
         calendarId:  calendar.id,
         name:        metaName  || undefined,
         description: metaDesc  || undefined,
-        color:       color.replace("#", ""),
       }, sessionId);
       // Keep localStorage color pref in sync
       const p = loadCalPrefs();
