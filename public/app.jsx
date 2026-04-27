@@ -395,6 +395,7 @@ function App() {
           {page==="tasks"          && <TaskTrackerPage   ctx={ctx} />}
           {page==="ai"             && <AIServicesPage    ctx={ctx} />}
           {page==="settings"       && <SettingsPage      ctx={ctx} />}
+          {page==="about"          && <AboutPage         ctx={ctx} />}
         </div>
         <BottomNav page={page} setPage={navigateTo} />
       </div>
@@ -537,6 +538,7 @@ function Sidebar({ page, setPage, ctx, isOpen }) {
     {id:"tasks",        icon:"✅", label:"Task Tracker"},
     {id:"ai",           icon:"✨", label:"AI Tools"},
     {id:"settings",     icon:"⚙️", label:"Settings"},
+    {id:"about",        icon:"ℹ️",  label:"About Us"},
   ];
   return (
     <div className={`sidebar${isOpen?" open":""}`}>
@@ -888,3 +890,154 @@ function ModalRouter({ modal, ctx }) {
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<App />);
+// ─── ABOUT PAGE ───────────────────────────────────────────────────────────────
+function AboutPage({ ctx }) {
+  const team = [
+    { initials:"?", name:"Your Name", role:"Full-Stack Developer",  bio:"Responsible for backend architecture, API design, and database management." },
+    { initials:"?", name:"Your Name", role:"Frontend Developer",    bio:"Designed and built the user interface, components, and user experience flows." },
+    { initials:"?", name:"Your Name", role:"Frontend Developer",    bio:"Implemented calendar views, event management, and responsive layouts." },
+    { initials:"?", name:"Your Name", role:"Backend Developer",     bio:"Worked on authentication, access control, and calendar sharing logic." },
+    { initials:"?", name:"Your Name", role:"UI/UX Designer",        bio:"Created wireframes, design system, and ensured visual consistency throughout." },
+    { initials:"?", name:"Your Name", role:"Project Manager",       bio:"Coordinated tasks, managed timelines, and ensured smooth team collaboration." },
+  ];
+
+  const stack = [
+    { name:"Go",          desc:"Backend / gRPC API",       color:"var(--teal)" },
+    { name:"ConnectRPC",  desc:"API protocol layer",        color:"var(--accent2)" },
+    { name:"React",       desc:"Frontend framework",        color:"var(--blue)" },
+    { name:"SQLite",      desc:"Database",                  color:"var(--yellow)" },
+    { name:"Nginx",       desc:"Reverse proxy / hosting",   color:"var(--green)" },
+  ];
+
+  return (
+    <div style={{ maxWidth:780, margin:"0 auto" }}>
+
+      {/* ── Hero ── */}
+      <div className="card" style={{ marginBottom:20, textAlign:"center", padding:"48px 32px",
+        background:"linear-gradient(135deg, rgba(108,99,255,0.12) 0%, rgba(45,212,191,0.08) 100%)",
+        border:"1px solid rgba(108,99,255,0.25)", position:"relative", overflow:"hidden" }}>
+        <div style={{ position:"absolute", top:-40, right:-40, width:180, height:180,
+          borderRadius:"50%", background:"rgba(108,99,255,0.07)", pointerEvents:"none" }} />
+        <div style={{ position:"absolute", bottom:-30, left:-30, width:120, height:120,
+          borderRadius:"50%", background:"rgba(45,212,191,0.06)", pointerEvents:"none" }} />
+        <div style={{ fontFamily:"var(--font-head)", fontSize:38, fontWeight:800, marginBottom:10,
+          background:"linear-gradient(90deg, var(--accent2), var(--teal))",
+          WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", backgroundClip:"text" }}>
+          CountMeIn
+        </div>
+        <div style={{ fontSize:16, color:"var(--text2)", maxWidth:480, margin:"0 auto", lineHeight:1.7 }}>
+          A collaborative calendar platform built to help students and teams organize
+          schedules, share events, and stay in sync — all in one place.
+        </div>
+        <div style={{ marginTop:20, display:"flex", justifyContent:"center", gap:10, flexWrap:"wrap" }}>
+          <span className="chip chip-accent">📅 Calendar Sharing</span>
+          <span className="chip chip-green">✅ Task Tracking</span>
+          <span className="chip chip-blue">👥 Group Calendars</span>
+          <span className="chip" style={{background:"rgba(45,212,191,0.15)",color:"var(--teal)"}}>✨ AI Tools</span>
+        </div>
+      </div>
+
+      {/* ── What is CountMeIn ── */}
+      <div className="card" style={{ marginBottom:20 }}>
+        <div style={{ fontFamily:"var(--font-head)", fontSize:18, fontWeight:700, marginBottom:14,
+          display:"flex", alignItems:"center", gap:8 }}>
+          <span style={{ fontSize:20 }}>🎯</span> What is CountMeIn?
+        </div>
+        <div style={{ color:"var(--text2)", fontSize:14, lineHeight:1.8, marginBottom:12 }}>
+          CountMeIn is a web-based scheduling and calendar management application designed
+          for students and organizations. It lets you create personal and group calendars,
+          share them using access codes, track academic tasks, and view everything on one
+          unified calendar.
+        </div>
+        <div style={{ color:"var(--text2)", fontSize:14, lineHeight:1.8 }}>
+          Whether you're coordinating a study group, managing org events, or just keeping
+          track of deadlines — CountMeIn gives you the tools to stay organized and
+          connected with the people that matter.
+        </div>
+      </div>
+
+      {/* ── Meet the Team ── */}
+      <div className="card" style={{ marginBottom:20 }}>
+        <div style={{ fontFamily:"var(--font-head)", fontSize:18, fontWeight:700, marginBottom:16,
+          display:"flex", alignItems:"center", gap:8 }}>
+          <span style={{ fontSize:20 }}>👩‍💻</span> Meet the Team
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(210px, 1fr))", gap:12 }}>
+          {team.map((m, i) => {
+            const colors = ["var(--accent)","var(--teal)","var(--blue)","var(--green)","var(--pink)","var(--orange)"];
+            const bg = colors[i % colors.length];
+            return (
+              <div key={i} style={{ background:"var(--surface2)", border:"1px solid var(--border)",
+                borderRadius:"var(--radius)", padding:"20px 16px", textAlign:"center",
+                transition:"var(--transition)" }}
+                onMouseEnter={e=>e.currentTarget.style.borderColor="var(--border2)"}
+                onMouseLeave={e=>e.currentTarget.style.borderColor="var(--border)"}>
+                {/* Avatar placeholder */}
+                <div style={{ width:72, height:72, borderRadius:"50%", margin:"0 auto 14px",
+                  background:"var(--surface3)", border:`2px dashed ${bg}`, position:"relative",
+                  display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column",
+                  overflow:"hidden" }}>
+                  {/* Silhouette SVG */}
+                  <svg width="72" height="72" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg"
+                    style={{ position:"absolute", inset:0 }}>
+                    <circle cx="36" cy="28" r="14" fill="currentColor" style={{ color: bg, opacity:0.25 }} />
+                    <ellipse cx="36" cy="62" rx="22" ry="14" fill="currentColor" style={{ color: bg, opacity:0.18 }} />
+                  </svg>
+                </div>
+                <div style={{ fontFamily:"var(--font-head)", fontSize:14, fontWeight:700,
+                  color:"var(--text2)", marginBottom:3, fontStyle:"italic", opacity:0.6 }}>
+                  {m.name}
+                </div>
+                <div style={{ fontSize:11, color:bg, fontWeight:600, marginBottom:8,
+                  textTransform:"uppercase", letterSpacing:"0.5px" }}>
+                  {m.role}
+                </div>
+                <div style={{ fontSize:12, color:"var(--text3)", lineHeight:1.6 }}>{m.bio}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Tech Stack ── */}
+      <div className="card" style={{ marginBottom:20 }}>
+        <div style={{ fontFamily:"var(--font-head)", fontSize:18, fontWeight:700, marginBottom:16,
+          display:"flex", alignItems:"center", gap:8 }}>
+          <span style={{ fontSize:20 }}>🛠️</span> Built With
+        </div>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:10 }}>
+          {stack.map((s, i) => (
+            <div key={i} style={{ display:"flex", alignItems:"center", gap:10,
+              background:"var(--surface2)", border:"1px solid var(--border)",
+              borderRadius:"var(--radius-sm)", padding:"10px 14px", flex:"1", minWidth:130 }}>
+              <div style={{ width:8, height:8, borderRadius:"50%", background:s.color, flexShrink:0 }} />
+              <div>
+                <div style={{ fontSize:13, fontWeight:700, color:"var(--text)" }}>{s.name}</div>
+                <div style={{ fontSize:11, color:"var(--text3)" }}>{s.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Built for ── */}
+      <div className="card" style={{ marginBottom:20, textAlign:"center", padding:"28px 24px",
+        borderColor:"rgba(52,211,153,0.2)", background:"rgba(52,211,153,0.04)" }}>
+        <div style={{ fontSize:28, marginBottom:10 }}>🎓</div>
+        <div style={{ fontFamily:"var(--font-head)", fontSize:16, fontWeight:700,
+          color:"var(--text)", marginBottom:6 }}>
+          Built for Students
+        </div>
+        <div style={{ fontSize:13, color:"var(--text2)", lineHeight:1.7, maxWidth:440, margin:"0 auto" }}>
+          CountMeIn was developed as a capstone project by students of the
+          Department of Computer and Information Sciences Mathematics (DCISM).
+          It is designed to serve the scheduling needs of the USC community.
+        </div>
+        <div style={{ marginTop:14, fontSize:12, color:"var(--text3)" }}>
+          University of San Carlos · DCISM · {new Date().getFullYear()}
+        </div>
+      </div>
+
+    </div>
+  );
+}
