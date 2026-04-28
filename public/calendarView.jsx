@@ -21,9 +21,22 @@ function CalendarPage({ ctx }) {
   const [viewDate, setViewDate]         = React.useState(new Date());
   const [selectedCals, setSelectedCals] = React.useState(null);
   const [showTasks, setShowTasks] = React.useState(false);
+  const [visibleOrgCalIds, setVisibleOrgCalIds] = React.useState(null); // null = all visible
 
-  const cals        = myCalendars();
+  const allCals     = myCalendars();
+  // Personal/joined calendars — not surfaced via an org
+  const cals        = allCals.filter(c => !c.isOrgShared);
+  // Org-shared calendars (tagged by fetchAllCalendars)
+  const orgCals     = allCals.filter(c => c.isOrgShared);
+
+  // Initialise visibleOrgCalIds to all org cal IDs whenever orgCals changes
+  const orgCalIds   = orgCals.map(c => c.id);
+  const visibleOrgIds = visibleOrgCalIds !== null
+    ? visibleOrgCalIds.filter(id => orgCalIds.includes(id))
+    : orgCalIds;
+
   const visibleCals = selectedCals || cals.map(c => c.id);
+  const allVisibleIds = [...visibleCals.map(strId), ...visibleOrgIds.map(strId)];
 
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
@@ -37,7 +50,7 @@ function CalendarPage({ ctx }) {
   while (cells.length % 7 !== 0)
     cells.push({ date: new Date(year, month+1, cells.length-daysInMonth-firstDay+1), isOtherMonth:true });
 
-  const allEvts = myEvents().filter(e => visibleCals.map(strId).includes(strId(e.calendarId)) && (showTasks || !(e.title||"").startsWith("TASK:")));
+  const allEvts = myEvents().filter(e => allVisibleIds.includes(strId(e.calendarId)) && (showTasks || !(e.title||"").startsWith("TASK:")));
   const today   = new Date();
   const monthNames = [
     "January","February","March","April","May","June",
@@ -72,6 +85,35 @@ function CalendarPage({ ctx }) {
           <button className="btn-icon btn-sm" onClick={() => setSelectedCals(null)}
             style={{ fontSize:11, padding:"4px 8px" }}>Reset</button>
         )}
+
+        {/* Sub-feature: Org Calendars Filter — one pill per org-shared calendar */}
+        {orgCals.length > 0 && (<>
+          <div style={{ width:1, height:16, background:"var(--border)", flexShrink:0, margin:"0 2px" }} />
+          {orgCals.map(c => {
+            const active = visibleOrgIds.includes(c.id);
+            return (
+              <div key={c.id}
+                onClick={() => setVisibleOrgCalIds(prev => {
+                  const current = prev !== null ? prev : orgCalIds;
+                  return current.includes(c.id)
+                    ? current.filter(id => id !== c.id)
+                    : [...current, c.id];
+                })}
+                title={`Org shared: ${c.name}`}
+                style={{ display:"flex", alignItems:"center", gap:5, padding:"4px 10px", borderRadius:20,
+                  background: active ? "rgba(255,255,255,0.06)" : "transparent",
+                  border: `1.5px solid ${active ? c.color : "var(--border)"}`,
+                  cursor:"pointer", flexShrink:0 }}>
+                <span style={{ fontSize:9, lineHeight:1, opacity: active ? 1 : 0.4 }}>🏢</span>
+                <span style={{ width:7, height:7, borderRadius:"50%", background: active ? c.color : "var(--text3)" }} />
+                <span style={{ fontSize:11, fontWeight:500, color: active ? "var(--text)" : "var(--text3)" }}>
+                  {c.name.split(" ")[0]}
+                </span>
+              </div>
+            );
+          })}
+        </>)}
+
         <div onClick={() => setShowTasks(t => !t)}
           style={{
             display:"flex", alignItems:"center", gap:5, padding:"4px 10px", borderRadius:20,
@@ -116,7 +158,7 @@ function CalendarPage({ ctx }) {
                 <div className="cal-date">{cell.date.getDate()}</div>
                 {show.map(e => {
                   const isTask = (e.title || "").startsWith("TASK:");
-                  const cal = cals.find(c => c.id === e.calendarId);
+                  const cal = allCals.find(c => c.id === e.calendarId);
                   const evColor = isTask ? "var(--yellow)" : (cal?.color || "var(--accent)");
                   return (
                     <div key={e.id} className="cal-event"
