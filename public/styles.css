@@ -79,7 +79,6 @@ body { font-family: var(--font-body); background: var(--bg); color: var(--text);
 .auth-hero-divider { height:1px; background:rgba(255,255,255,0.06); flex-shrink:0; }
 
 /* Sections — no bottom margin; gap handles spacing */
-.auth-hero-section { }
 .auth-hero-section-title {
   font-size:10px; font-weight:700; letter-spacing:1.2px;
   text-transform:uppercase; color:rgba(255,255,255,0.28);
