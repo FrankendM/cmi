@@ -30,19 +30,21 @@ const TYPE_ICON = {
   "Other":      "📌",
 };
 
-// ── Encode location: SUBJ / TYPE / PRIO ──
-function encodeTaskLocation(subject, type, priority) {
-  return `SUBJ:${subject||""}|TYPE:${type||"Assignment"}|PRIO:${priority||"Medium"}`;
+// ── Encode location: SUBJ / TYPE / PRIO / COLOR ──
+function encodeTaskLocation(subject, type, priority, color) {
+  return `SUBJ:${subject||""}|TYPE:${type||"Assignment"}|PRIO:${priority||"Medium"}|COLOR:${color||""}`;
 }
 function decodeTaskLocation(loc) {
-  if (!loc || !loc.startsWith("SUBJ:")) return { subject:"", type:"Assignment", priority:"Medium" };
-  const subjM = loc.match(/SUBJ:([^|]*)/);
-  const typeM = loc.match(/TYPE:([^|]*)/);
-  const prioM = loc.match(/PRIO:(.*)/);
+  if (!loc || !loc.startsWith("SUBJ:")) return { subject:"", type:"Assignment", priority:"Medium", color:"" };
+  const subjM  = loc.match(/SUBJ:([^|]*)/);
+  const typeM  = loc.match(/TYPE:([^|]*)/);
+  const prioM  = loc.match(/PRIO:([^|]*)/);
+  const colorM = loc.match(/COLOR:([^|]*)/);
   return {
-    subject:  subjM ? subjM[1].trim() : "",
-    type:     typeM ? typeM[1].trim() : "Assignment",
-    priority: prioM ? prioM[1].trim() : "Medium",
+    subject:  subjM  ? subjM[1].trim()  : "",
+    type:     typeM  ? typeM[1].trim()  : "Assignment",
+    priority: prioM  ? prioM[1].trim()  : "Medium",
+    color:    colorM ? colorM[1].trim() : "",
   };
 }
 
@@ -79,7 +81,7 @@ function eventToTask(ev) {
   const rawTitle = ev.title || "";
   const title    = rawTitle.startsWith(TASK_PREFIX) ? rawTitle.slice(TASK_PREFIX.length) : rawTitle;
   const { description, checklist, status: storedStatus } = decodeDesc(ev.description);
-  const { subject, type, priority } = decodeTaskLocation(ev.location);
+  const { subject, type, priority, color } = decodeTaskLocation(ev.location);
   const dueDate   = ev.startTime ? ev.startTime.slice(0, 10) : "";
   const dueTime   = ev.startTime ? ev.startTime.slice(11, 16) : "";
   const startDate = ev.startTime ? ev.startTime.slice(0, 10) : "";
@@ -93,7 +95,7 @@ function eventToTask(ev) {
     status = done === 0 ? "not-started" : done === checklist.length ? "done" : "in-progress";
   }
 
-  return { id:ev.id, calendarId:ev.calendarId, title, subject, type, priority, description, checklist, dueDate, dueTime, startDate, startTime, endDate, endTime, status, createdAt:ev.createdAt||new Date().toISOString() };
+  return { id:ev.id, calendarId:ev.calendarId, title, subject, type, priority, color, description, checklist, dueDate, dueTime, startDate, startTime, endDate, endTime, status, createdAt:ev.createdAt||new Date().toISOString() };
 }
 
 function taskToEvent(task, calendarId) {
@@ -111,7 +113,7 @@ function taskToEvent(task, calendarId) {
     calendarId,
     title:      TASK_PREFIX + (task.title || ""),
     description:descFull,
-    location:   encodeTaskLocation(task.subject, task.type, task.priority),
+    location:   encodeTaskLocation(task.subject, task.type, task.priority, task.color),
     startTime:  startISO,
     endTime:    endISO,
     isImportant:task.priority === "Urgent" || task.priority === "High",
@@ -175,7 +177,7 @@ function TaskTrackerPage({ ctx }) {
   const [typeFilter,   setTypeFilter]   = React.useState("all");
 
   const [showForm,    setShowForm]    = React.useState(false);
-  const [form,        setForm]        = React.useState({ title:"", subject:"", type:"Assignment", priority:"Medium", description:"", dueDate:"", dueTime:"", startDate:"", startTime:"", endDate:"", endTime:"", checklist:[] });
+  const [form, setForm] = React.useState({ title:"", subject:"", type:"Assignment", priority:"Medium", color:"", description:"", dueDate:"", dueTime:"", startDate:"", startTime:"", endDate:"", endTime:"", checklist:[] });
   const [newCheckItem,setNewCheckItem]= React.useState("");
   const [editId,      setEditId]      = React.useState(null);
   const [formLoading, setFormLoading] = React.useState(false);
@@ -247,11 +249,11 @@ function TaskTrackerPage({ ctx }) {
 
   // ── Form helpers ──
   function openNew() {
-    setForm({ title:"", subject:"", type:"Assignment", priority:"Medium", description:"", dueDate:"", dueTime:"", startDate:"", startTime:"", endDate:"", endTime:"", checklist:[] });
+    setForm({ title:"", subject:"", type:"Assignment", priority:"Medium", color:"", description:"", dueDate:"", dueTime:"", startDate:"", startTime:"", endDate:"", endTime:"", checklist:[] });
     setNewCheckItem(""); setEditId(null); setFormError(""); setShowForm(true);
   }
   function openEdit(task) {
-    setForm({ title:task.title, subject:task.subject||"", type:task.type||"Assignment", priority:task.priority||"Medium", description:task.description||"", dueDate:task.dueDate||"", dueTime:task.dueTime||"", startDate:task.startDate||"", startTime:task.startTime||"", endDate:task.endDate||"", endTime:task.endTime||"", checklist:(task.checklist||[]).map(i=>({...i,id:i.id||uid_gen()})) });
+    setForm({ title:task.title, subject:task.subject||"", type:task.type||"Assignment", priority:task.priority||"Medium", color:task.color||"", description:task.description||"", dueDate:task.dueDate||"", dueTime:task.dueTime||"", startDate:task.startDate||"", startTime:task.startTime||"", endDate:task.endDate||"", endTime:task.endTime||"", checklist:(task.checklist||[]).map(i=>({...i,id:i.id||uid_gen()})) });
     setNewCheckItem(""); setEditId(task.id); setFormError(""); setShowForm(true);
   }
   function addCheck() {
@@ -285,10 +287,12 @@ function TaskTrackerPage({ ctx }) {
   async function toggleCheck(taskId, checkId) {
     const cal  = getTaskCal(); if (!cal) return;
     const task = tasks.find(t => t.id === taskId); if (!task) return;
-    // Save both card scroll and page scroll before any state update
-    const scrollEl    = checkScrollRefs.current[taskId];
-    const savedScroll = scrollEl ? scrollEl.scrollTop : 0;
-    const savedPageY  = window.scrollY;
+    // Save scroll for ALL cards and page before update
+    const savedScrolls = {};
+    Object.keys(checkScrollRefs.current).forEach(id => {
+      savedScrolls[id] = checkScrollRefs.current[id] ? checkScrollRefs.current[id].scrollTop : 0;
+    });
+    const savedPageY = window.scrollY;
     const newCL     = task.checklist.map(i => i.id===checkId ? {...i, checked:!i.checked} : i);
     const newStatus = computeStatus(newCL, task.status);
     const newEvent  = taskToEvent({...task, checklist:newCL, status:newStatus}, cal.id);
@@ -296,9 +300,11 @@ function TaskTrackerPage({ ctx }) {
       const calEvts = events.filter(e=>e.calendarId===cal.id).map(e=>e.id===taskId?newEvent:e);
       await calApi("WriteCalendar", { calendarId: Number(cal.id), ical: eventsToIcalB64(calEvts) }, sessionId);
       setEvents(prev=>prev.map(e=>e.id===taskId?newEvent:e));
-      // Restore both scroll positions after re-render
+      // Restore scroll for ALL cards and page after re-render
       requestAnimationFrame(() => {
-        if (checkScrollRefs.current[taskId]) checkScrollRefs.current[taskId].scrollTop = savedScroll;
+        Object.keys(savedScrolls).forEach(id => {
+          if (checkScrollRefs.current[id]) checkScrollRefs.current[id].scrollTop = savedScrolls[id];
+        });
         window.scrollTo({ top: savedPageY, behavior: "instant" });
       });
     } catch(e) { showToast("Failed to update.", "error"); }
@@ -357,8 +363,9 @@ function TaskTrackerPage({ ctx }) {
     const hasEnd   = task.endDate   || task.endTime;
     const hasDue   = task.dueDate;
 
+    const cardColor = task.color || "var(--accent)";
     return (
-      <div className="task-card" style={{ marginBottom:0, padding:16, display:"flex", flexDirection:"column", gap:10 }}>
+      <div className="task-card" style={{ marginBottom:0, padding:16, display:"flex", flexDirection:"column", gap:10, borderLeft:`3px solid ${cardColor}`, boxShadow:`0 0 10px ${task.color ? task.color + "55" : "rgba(108,99,255,0.25)"}` }}>
 
         {/* Top row: icon + title + actions */}
         <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
@@ -580,6 +587,32 @@ function TaskTrackerPage({ ctx }) {
               <select className="select" value={form.priority} onChange={e=>setForm(f=>({...f,priority:e.target.value}))}>
                 {TASK_PRIORITY.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
+            </div>
+          </div>
+
+          {/* Color picker */}
+          <div className="form-group">
+            <label className="form-label">Card Color <span style={{ color:"var(--text3)", fontWeight:400 }}>(optional)</span></label>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+              {["","#6c63ff","#3b82f6","#10b981","#f59e0b","#ef4444","#ec4899","#8b5cf6","#14b8a6","#f97316"].map(col => (
+                <div key={col} onClick={()=>setForm(f=>({...f,color:col}))}
+                  style={{
+                    width: col==="" ? "auto" : 22, height: col==="" ? "auto" : 22,
+                    borderRadius: col==="" ? 4 : "50%",
+                    background: col==="" ? "var(--surface2)" : col,
+                    border: form.color===col ? "2.5px solid #fff" : "2.5px solid transparent",
+                    boxShadow: form.color===col ? `0 0 0 2px ${col||"var(--border)"}` : "none",
+                    cursor:"pointer", transition:"all .15s",
+                    fontSize: col===""?11:undefined, color:"var(--text3)", padding: col===""?"2px 8px":undefined,
+                    display:"flex", alignItems:"center", justifyContent:"center",
+                  }}>
+                  {col==="" ? "None" : ""}
+                </div>
+              ))}
+              <input type="color" value={form.color||"#6c63ff"}
+                onChange={e=>setForm(f=>({...f,color:e.target.value}))}
+                style={{ width:28, height:28, borderRadius:"50%", border:"none", cursor:"pointer", background:"none", padding:0 }}
+                title="Custom color" />
             </div>
           </div>
 
