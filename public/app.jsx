@@ -265,6 +265,7 @@ async function fetchAllCalendars(sid, calPrefs, userId) {
         id, name: calRes.name, description: calRes.description || "",
         isOwner, codes: [], color,
         type: prefs.type || (isOwner ? "personal" : "shared"),
+        isOrgShared: false,
       });
       const calEvents = icalToEvents(calRes.ical, id);
       calEvents.forEach(e => { e.calendarId = id; });
@@ -273,6 +274,47 @@ async function fetchAllCalendars(sid, calPrefs, userId) {
       if (e.status === 404 || e.status === 403) removeCalendarId(userId, id);
     }
   }));
+
+  // ── Fetch org-shared calendars ──────────────────────────────────
+  // Load all orgs the user belongs to, then for each org fetch the
+  // calendars its owner has shared, and append them (deduplicated).
+  try {
+    const orgRes = await apiCall("/users.v2.UserProfileService/GetUserOrganizations", {}, sid);
+    const orgIds = (orgRes.organizationIds || []).map(strId);
+    const personalIds = new Set(allIds);
+
+    await Promise.all(orgIds.map(async (orgId) => {
+      try {
+        const calListRes = await apiCall(
+          "/organizations.v2.OrganizationCalendarService/GetOrganizationCalendars",
+          { organizationId: orgId }, sid
+        );
+        const sharedIds = (calListRes.calendarIds || []).map(strId);
+        await Promise.all(sharedIds.map(async (id) => {
+          // Skip if already loaded as a personal/joined calendar
+          if (personalIds.has(id) || calendars.find(c => strId(c.id) === id)) return;
+          try {
+            const calRes = await calApi("GetCalendar", { calendarId: Number(id) }, sid);
+            const prefs  = calPrefs[id] || {};
+            const color  = prefs.color || pickColor(id);
+            calendars.push({
+              id, name: calRes.name, description: calRes.description || "",
+              isOwner: false, codes: [], color,
+              type: "org-shared",
+              isOrgShared: true,
+              orgId,
+            });
+            const calEvents = icalToEvents(calRes.ical, id);
+            calEvents.forEach(e => { e.calendarId = id; });
+            events.push(...calEvents);
+          } catch(e) { /* calendar inaccessible — skip silently */ }
+        }));
+      } catch(e) { /* org has no shared cals — skip */ }
+    }));
+  } catch(e) {
+    console.warn("Could not fetch org calendars:", e.message);
+  }
+
   return { calendars, events };
 }
 
@@ -420,6 +462,7 @@ function App() {
           {page==="dashboard"      && <Dashboard         ctx={ctx} setPage={navigateTo} />}
           {page==="calendar"       && <CalendarPage      ctx={ctx} />}
           {page==="calendars"      && <CalendarsPage     ctx={ctx} />}
+          {page==="organizations"  && <OrganizationsTab  ctx={ctx} />}
           {page==="events"         && <EventsPage        ctx={ctx} />}
           {page==="tasks"          && <TaskTrackerPage   ctx={ctx} />}
           {page==="ai"             && <AIServicesPage    ctx={ctx} />}
@@ -697,6 +740,7 @@ function Sidebar({ page, setPage, ctx, isOpen }) {
     {id:"calendar",     icon:"📅", label:"Calendar View"},
     {id:"events",       icon:"🗓",  label:"Events List"},
     {id:"calendars",    icon:"📚", label:"Manage Calendars"},
+    {id:"organizations",icon:"🏛",  label:"Organizations"},
     {id:"tasks",        icon:"✅", label:"Task Tracker"},
     {id:"ai",           icon:"✨", label:"AI Tools"},
     {id:"settings",     icon:"⚙️", label:"Settings"},
@@ -737,7 +781,7 @@ function Sidebar({ page, setPage, ctx, isOpen }) {
 
 // ─── TOPBAR ───────────────────────────────────────────────────────────────────
 function Topbar({ page, ctx, setPage, onMenuClick }) {
-  const titles = {dashboard:"Dashboard",calendar:"Calendar View",events:"Events List",calendars:"Manage Calendars",tasks:"Task Tracker",ai:"AI Tools",settings:"Settings",about:"About SchedU"};
+  const titles = {dashboard:"Dashboard",calendar:"Calendar View",events:"Events List",calendars:"Manage Calendars",organizations:"Organizations",tasks:"Task Tracker",ai:"AI Tools",settings:"Settings",about:"About SchedU"};
   const { dataLoading, refreshCalendars, theme, toggleTheme } = ctx;
   return (
     <div className="topbar">
@@ -1047,6 +1091,11 @@ function ModalRouter({ modal, ctx }) {
   if(type==="calendar-events")  return <CalendarEventsModal  ctx={ctx} calendar={data} />;
   if(type==="manage-calendar")  return <ManageCalendarModal  ctx={ctx} calendar={data} />;
   if(type==="day-events")       return <DayEventsModal       ctx={ctx} date={data.date} />;
+  if(type==="create-org")       return <CreateOrgModal       ctx={ctx} />;
+  if(type==="manage-org")       return <ManageOrgModal       ctx={ctx} orgId={data.orgId} org={data.org} />;
+  if(type==="join-prompt")      return <JoinPromptModal      ctx={ctx} orgId={data.orgId} org={data.org} prompt={data.prompt} />;
+  if(type==="org-detail")       return <OrgDetailModal       ctx={ctx} orgId={data.orgId} org={data.org} />;
+  if(type==="org-members")      return <OrgMembersModal      ctx={ctx} orgId={data.orgId} org={data.org} />;
   return null;
 }
 
