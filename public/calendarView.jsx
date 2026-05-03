@@ -486,10 +486,11 @@ function CreateEventModal({ ctx, initial }) {
 // Sub-feature: Event Detail Fields (view + edit)
 // Sub-feature: Create / Edit / Delete Event (edit + delete side)
 function EventDetailModal({ ctx, event }) {
-  const { sessionId, myCalendars, events, setEvents, closeModal, showToast } = ctx;
+  const { sessionId, myCalendars, events, setEvents, closeModal, showToast, currentUser } = ctx;
   const cal     = myCalendars().find(c => strId(c.id) === strId(event.calendarId));
   const canEdit = cal?.isOwner;
   const [editing, setEditing] = React.useState(false);
+  const [confirmDlg, setConfirmDlg] = React.useState(null);
   const [form, setForm] = React.useState({
     title: event.title,
     description: event.description || "",
@@ -540,6 +541,7 @@ function EventDetailModal({ ctx, event }) {
       const calEvents = events.map(e => e.id===event.id ? updatedEvent : e).filter(e => strId(e.calendarId)===calId);
       await calApi("WriteCalendar", { calendarId: Number(calId), ical: eventsToIcalB64(calEvents) }, sessionId);
       setEvents(prev => prev.map(e => e.id===event.id ? updatedEvent : e));
+      addAuditEntry(calId, { user: currentUser?.name || "You", action: "edited", title: form.title });
       showToast("Event updated!"); closeModal();
     } catch(e) { showToast(e.message || "Failed to update event.", "error"); }
     finally { setLoading(false); }
@@ -553,13 +555,24 @@ function EventDetailModal({ ctx, event }) {
       const remaining = events.filter(e => strId(e.calendarId)===calId && e.id!==event.id);
       await calApi("WriteCalendar", { calendarId: Number(calId), ical: eventsToIcalB64(remaining) }, sessionId);
       setEvents(prev => prev.filter(e => e.id !== event.id));
+      addAuditEntry(calId, { user: currentUser?.name || "You", action: "deleted", title: event.title });
       showToast(`"${event.title}" deleted`); closeModal();
     } catch(e) { showToast(e.message || "Failed to delete event.", "error"); }
     finally { setLoading(false); }
   }
 
+  function confirmDelete() {
+    setConfirmDlg({
+      message: `Delete "${(event.title||"").replace(/^TASK:/,"")}"?`,
+      description: "This event will be permanently removed.",
+      danger: true,
+      onConfirm: deleteEvent,
+    });
+  }
+
   return (
     <div className="modal-overlay" onClick={closeModal}>
+      {confirmDlg && <ConfirmDialog {...confirmDlg} onClose={() => setConfirmDlg(null)} />}
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <div style={{ display:"flex", alignItems:"center", gap:10, flex:1 }}>
@@ -636,7 +649,7 @@ function EventDetailModal({ ctx, event }) {
         </div>
         <div className="modal-footer">
           {canEdit && !editing && (<>
-            <button className="btn btn-danger btn-sm" onClick={deleteEvent} disabled={loading}>Delete</button>
+            <button className="btn btn-danger btn-sm" onClick={confirmDelete} disabled={loading}>Delete</button>
             <button className="btn btn-secondary btn-sm" onClick={() => setEditing(true)}>Edit</button>
           </>)}
           {editing && (<>

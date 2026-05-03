@@ -992,6 +992,7 @@ function SettingsPage({ ctx }) {
   const [deleteLoading,setDeleteLoading]  =useState(false);
   const [profileError,setProfileError]    =useState("");
   const [loginError,setLoginError]        =useState("");
+  const [confirmDlg,setConfirmDlg]        =useState(null);
 
   async function saveProfile() {
     setProfileError(""); setProfileLoading(true);
@@ -1035,11 +1036,17 @@ function SettingsPage({ ctx }) {
   }
 
   async function deleteAccount() {
-    if(!window.confirm("Permanently delete your account? This cannot be undone.")) return;
-    setDeleteLoading(true);
-    try { await apiCall("/users.v2.UserService/DeleteUser", {}, sessionId); clearSession(); handleLogout(); }
-    catch(e) { showToast(e.message||"Failed to delete account.","error"); }
-    finally { setDeleteLoading(false); }
+    setConfirmDlg({
+      message: "Delete your account?",
+      description: "This is permanent and cannot be undone.",
+      danger: true,
+      onConfirm: async () => {
+        setDeleteLoading(true);
+        try { await apiCall("/users.v2.UserService/DeleteUser", {}, sessionId); clearSession(); handleLogout(); }
+        catch(e) { showToast(e.message||"Failed to delete account.","error"); }
+        finally { setDeleteLoading(false); }
+      }
+    });
   }
 
   const ac = loadAvatarColor(currentUser.id, currentUser.name);
@@ -1047,6 +1054,7 @@ function SettingsPage({ ctx }) {
 
   return (
     <div style={{maxWidth:620}}>
+      {confirmDlg && <ConfirmDialog {...confirmDlg} onClose={() => setConfirmDlg(null)} />}
           <div className="card mb-4">
             <div style={{fontFamily:"Syne,sans-serif",fontWeight:700,fontSize:16,marginBottom:18}}>Profile</div>
             <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:24}}>
@@ -1180,6 +1188,40 @@ function ModalRouter({ modal, ctx }) {
   return null;
 }
 
+
+// ─── CONFIRM DIALOG ───────────────────────────────────────────────────────────
+// Custom confirmation banner — replaces native window.confirm() app-wide.
+function ConfirmDialog({ message, description, danger, onConfirm, onClose }) {
+  return (
+    <div style={{
+      position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", backdropFilter:"blur(4px)",
+      zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", padding:20,
+    }} onClick={onClose}>
+      <div style={{
+        background:"var(--surface)", border:"1px solid var(--border2)", borderRadius:16,
+        padding:"28px 28px 22px", maxWidth:400, width:"100%",
+        boxShadow:"0 12px 48px rgba(0,0,0,0.5)",
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize:16, fontWeight:700, color:"var(--text)", marginBottom: description ? 8 : 20 }}>
+          {message}
+        </div>
+        {description && (
+          <div style={{ fontSize:13, color:"var(--text3)", marginBottom:20, lineHeight:1.6 }}>
+            {description}
+          </div>
+        )}
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button
+            className={`btn btn-sm ${danger ? "btn-danger" : "btn-primary"}`}
+            onClick={() => { onConfirm(); onClose(); }}>
+            Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(<App />);

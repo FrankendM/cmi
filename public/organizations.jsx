@@ -81,7 +81,7 @@ function OrganizationsTab({ ctx }) {
   // Sub-tabs: "orgs" | "myorgs"
   const [subTab,       setSubTab]       = React.useState("orgs");
   const [refreshKey,   setRefreshKey]   = React.useState(0);
-
+  const [confirmDlg,   setConfirmDlg]   = React.useState(null);
 
   const userId = currentUser.id;
 
@@ -131,67 +131,103 @@ function OrganizationsTab({ ctx }) {
   async function handleJoin(orgId) {
     const org = orgDetails[orgId];
     const isCourse = (org?.description || "").startsWith("COURSE:");
-    // If org requires approval, check whether there's a join prompt questionnaire
     if (!isCourse && org?.requiresJoinRequest) {
+      setJoinLoading(orgId);
       try {
         const promptRes = await orgPromptApi("GetCurrentJoinPrompt", { organizationId: Number(orgId) }, sessionId);
-        if (promptRes?.joinPromptEventId) {
-          const promptDetail = await orgPromptApi("GetJoinPrompt", { joinPromptEventId: promptRes.joinPromptEventId }, sessionId);
-          setModal({ type: "join-prompt", data: { orgId, org, prompt: promptDetail.prompt || "" } });
+        const promptId = promptRes?.joinPromptEventId;
+        if (!promptId) {
+          showToast("This organization requires approval but has no questionnaire set up yet. Contact the owner.", "error");
+          setJoinLoading(null);
           return;
         }
-      } catch(e) {}
+        const promptDetail = await orgPromptApi("GetJoinPrompt", { joinPromptEventId: promptId }, sessionId);
+        setJoinLoading(null);
+        setModal({ type: "join-prompt", data: { orgId, org, prompt: { text: promptDetail.prompt || "", joinPromptEventId: promptId } } });
+        return;
+      } catch(e) {
+        showToast("Could not load join questionnaire: " + (e.message || "unknown error"), "error");
+        setJoinLoading(null);
+        return;
+      }
     }
-    setJoinLoading(orgId);
-    try {
-      await orgMemApi("JoinOrganization", { organizationId: Number(orgId) }, sessionId);
-      if (isCourse) addJoinedCourseId(userId, orgId);
-      else          addJoinedOrgId(userId, orgId);
-      showToast(`Joined "${org?.name}"!`);
-      setAllOrgs(prev => [...prev]);
-    } catch(e) {
-      showToast(e.message || "Failed to join.", "error");
-    } finally {
-      setJoinLoading(null);
-    }
+
+    setConfirmDlg({
+      message: `Join "${org?.name}"?`,
+      description: org?.description && !isCourse ? org.description : undefined,
+      onConfirm: async () => {
+        setJoinLoading(orgId);
+        try {
+          await orgMemApi("JoinOrganization", { organizationId: Number(orgId) }, sessionId);
+          if (isCourse) addJoinedCourseId(userId, orgId);
+          else          addJoinedOrgId(userId, orgId);
+          addOrgAuditEntry(orgId, { name: currentUser.name || currentUser.email, action: "joined" });
+          showToast(`Joined "${org?.name}"!`);
+          setAllOrgs(prev => [...prev]);
+        } catch(e) {
+          const msg = e.message || "";
+          if (msg.includes("1644") || msg.toLowerCase().includes("already exists") || msg.toLowerCase().includes("membership")) {
+            if (isCourse) addJoinedCourseId(userId, orgId);
+            else          addJoinedOrgId(userId, orgId);
+            showToast(`You're already a member of "${org?.name}".`);
+            setAllOrgs(prev => [...prev]);
+          } else {
+            showToast(msg || "Failed to join organization.", "error");
+          }
+        } finally {
+          setJoinLoading(null);
+        }
+      }
+    });
   }
 
-  // ── Leave org
-  async function handleLeave(orgId) {
+  function handleLeave(orgId) {
     const org = orgDetails[orgId];
     const isCourse = (org?.description || "").startsWith("COURSE:");
     const name = org?.name || "this organization";
-    if (!window.confirm(`Leave "${name}"?`)) return;
-    setLeaveLoading(orgId);
-    try {
-      await orgMemApi("LeaveOrganization", { organizationId: Number(orgId) }, sessionId);
-      if (isCourse) removeCourseId(userId, orgId);
-      else          removeOrgId(userId, orgId);
-      showToast(`Left "${name}"`);
-      setAllOrgs(prev => [...prev]);
-    } catch(e) {
-      showToast(e.message || "Failed to leave.", "error");
-    } finally {
-      setLeaveLoading(null);
-    }
+    setConfirmDlg({
+      message: `Leave "${name}"?`,
+      danger: true,
+      onConfirm: async () => {
+        setLeaveLoading(orgId);
+        try {
+          await orgMemApi("LeaveOrganization", { organizationId: Number(orgId) }, sessionId);
+          if (isCourse) removeCourseId(userId, orgId);
+          else          removeOrgId(userId, orgId);
+          addOrgAuditEntry(orgId, { name: currentUser.name || currentUser.email, action: "left" });
+          showToast(`Left "${name}"`);
+          setAllOrgs(prev => [...prev]);
+        } catch(e) {
+          showToast(e.message || "Failed to leave.", "error");
+        } finally {
+          setLeaveLoading(null);
+        }
+      }
+    });
   }
 
   // ── Delete org (owner only)
-  async function handleDelete(orgId) {
+  function handleDelete(orgId) {
     const org = orgDetails[orgId];
     const isCourse = (org?.description || "").startsWith("COURSE:");
     const name = org?.name || "this organization";
-    if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return;
-    try {
-      await orgApi("DeleteOrganization", { organizationId: Number(orgId) }, sessionId);
-      if (isCourse) removeCourseId(userId, orgId);
-      else          removeOrgId(userId, orgId);
-      showToast(`Deleted "${name}"`);
-      if (typeof window.__refreshOrgs === "function") window.__refreshOrgs();
-      setAllOrgs(prev => prev.filter(id => id !== orgId));
-    } catch(e) {
-      showToast(e.message || "Failed to delete.", "error");
-    }
+    setConfirmDlg({
+      message: `Delete "${name}"?`,
+      description: "This cannot be undone.",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await orgApi("DeleteOrganization", { organizationId: Number(orgId) }, sessionId);
+          if (isCourse) removeCourseId(userId, orgId);
+          else          removeOrgId(userId, orgId);
+          showToast(`Deleted "${name}"`);
+          if (typeof window.__refreshOrgs === "function") window.__refreshOrgs();
+          setAllOrgs(prev => prev.filter(id => id !== orgId));
+        } catch(e) {
+          showToast(e.message || "Failed to delete.", "error");
+        }
+      }
+    });
   }
 
   // ── Filter
@@ -213,6 +249,7 @@ function OrganizationsTab({ ctx }) {
 
   return (
     <div>
+      {confirmDlg && <ConfirmDialog {...confirmDlg} onClose={() => setConfirmDlg(null)} />}
       {/* ── Sub-tabs + Create button */}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20, flexWrap:"wrap", gap:10 }}>
         <div style={{ display:"flex", gap:4, background:"var(--surface2)", borderRadius:10, padding:3, border:"1px solid var(--border)" }}>
@@ -1286,6 +1323,39 @@ function OrgMembersModal({ ctx, orgId, org }) {
 
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={closeModal}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+// ─── CONFIRM DIALOG ───────────────────────────────────────────────────────────
+// Custom confirmation banner — replaces native window.confirm() for mobile.
+function ConfirmDialog({ message, description, danger, onConfirm, onClose }) {
+  return (
+    <div style={{
+      position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", backdropFilter:"blur(4px)",
+      zIndex:200, display:"flex", alignItems:"center", justifyContent:"center", padding:20,
+    }} onClick={onClose}>
+      <div style={{
+        background:"var(--surface)", border:"1px solid var(--border2)", borderRadius:16,
+        padding:"28px 28px 22px", maxWidth:400, width:"100%",
+        boxShadow:"0 12px 48px rgba(0,0,0,0.5)",
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize:16, fontWeight:700, color:"var(--text)", marginBottom: description ? 8 : 20 }}>
+          {message}
+        </div>
+        {description && (
+          <div style={{ fontSize:13, color:"var(--text3)", marginBottom:20, lineHeight:1.6 }}>
+            {description}
+          </div>
+        )}
+        <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+          <button
+            className={`btn btn-sm ${danger ? "btn-danger" : "btn-primary"}`}
+            onClick={() => { onConfirm(); onClose(); }}>
+            Confirm
+          </button>
         </div>
       </div>
     </div>
