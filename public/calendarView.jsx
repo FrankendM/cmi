@@ -1,4 +1,3 @@
-// ============================================================
 //  calendarView.jsx — Calendar & Event Management
 //asdasd
 //  Components:
@@ -57,10 +56,74 @@ function CalendarPage({ ctx }) {
     "July","August","September","October","November","December",
   ];
 
+  // ── Group org-shared cals by orgId → one pill per org ──────────
+  // { orgId → { orgName, orgIsCourse, color, calIds[] } }
+  const orgGroups = {};
+  orgCals.forEach(c => {
+    if (!orgGroups[c.orgId]) {
+      orgGroups[c.orgId] = {
+        orgId: c.orgId,
+        orgName: c.orgName || c.name,
+        orgIsCourse: !!c.orgIsCourse,
+        color: c.color,
+        calIds: [],
+      };
+    }
+    orgGroups[c.orgId].calIds.push(c.id);
+  });
+  const courseGroups = Object.values(orgGroups).filter(g => g.orgIsCourse);
+  const plainOrgGroups = Object.values(orgGroups).filter(g => !g.orgIsCourse);
+
+  function isGroupActive(group) {
+    return group.calIds.some(id => visibleOrgIds.includes(id));
+  }
+  function toggleGroup(group) {
+    setVisibleOrgCalIds(prev => {
+      const current = prev !== null ? prev : orgCalIds;
+      const allActive = group.calIds.every(id => current.includes(id));
+      if (allActive) return current.filter(id => !group.calIds.includes(id));
+      const merged = [...new Set([...current, ...group.calIds])];
+      return merged;
+    });
+  }
+
+  // Shared pill label style helper
+  function SectionLabel({ children }) {
+    return (
+      <span style={{
+        fontSize:9, fontWeight:700, color:"var(--text3)", textTransform:"uppercase",
+        letterSpacing:1.2, alignSelf:"center", flexShrink:0, paddingRight:2,
+      }}>{children}</span>
+    );
+  }
+
+  function OrgGroupPill({ group, icon }) {
+    const active = isGroupActive(group);
+    return (
+      <div
+        onClick={() => toggleGroup(group)}
+        title={`${group.orgName} (${group.calIds.length} shared calendar${group.calIds.length !== 1 ? "s" : ""})`}
+        style={{ display:"flex", alignItems:"center", gap:5, padding:"4px 10px", borderRadius:20,
+          background: active ? "rgba(255,255,255,0.06)" : "transparent",
+          border: `1.5px solid ${active ? group.color : "var(--border)"}`,
+          cursor:"pointer", flexShrink:0 }}>
+        <span style={{ fontSize:9, lineHeight:1, opacity: active ? 1 : 0.4 }}>{icon}</span>
+        <span style={{ width:7, height:7, borderRadius:"50%", background: active ? group.color : "var(--text3)", flexShrink:0 }} />
+        <span style={{ fontSize:11, fontWeight:500, color: active ? "var(--text)" : "var(--text3)" }}>
+          {group.orgName}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div>
-      {/* Sub-feature: Calendar Filter Toggle — click a pill to show/hide a calendar */}
-        <div className="cal-filter" style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14, alignItems:"center" }}>        {cals.map(c => {
+      {/* ── Filter bar: labelled sections ── */}
+      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:14, alignItems:"center" }}>
+
+        {/* ── My Calendars ── */}
+        <SectionLabel>My Calendars</SectionLabel>
+        {cals.map(c => {
           const active = visibleCals.includes(c.id);
           return (
             <div key={c.id}
@@ -75,39 +138,32 @@ function CalendarPage({ ctx }) {
                 cursor:"pointer", flexShrink:0 }}>
               <span style={{ width:7, height:7, borderRadius:"50%", background:active?c.color:"var(--text3)" }} />
               <span style={{ fontSize:11, fontWeight:500, color:active?"var(--text)":"var(--text3)" }}>
-                {c.name.split(" ")[0]}
+                {c.name}
               </span>
             </div>
           );
         })}
-        {/* Sub-feature: Org Calendars Filter — one pill per org-shared calendar */}
-        {orgCals.length > 0 && (<>
-          <div style={{ width:1, height:16, background:"var(--border)", flexShrink:0, margin:"0 2px" }} />
-          {orgCals.map(c => {
-            const active = visibleOrgIds.includes(c.id);
-            return (
-              <div key={c.id}
-                onClick={() => setVisibleOrgCalIds(prev => {
-                  const current = prev !== null ? prev : orgCalIds;
-                  return current.includes(c.id)
-                    ? current.filter(id => id !== c.id)
-                    : [...current, c.id];
-                })}
-                title={`Org shared: ${c.name}`}
-                style={{ display:"flex", alignItems:"center", gap:5, padding:"4px 10px", borderRadius:20,
-                  background: active ? "rgba(255,255,255,0.06)" : "transparent",
-                  border: `1.5px solid ${active ? c.color : "var(--border)"}`,
-                  cursor:"pointer", flexShrink:0 }}>
-                <span style={{ fontSize:9, lineHeight:1, opacity: active ? 1 : 0.4 }}>🏢</span>
-                <span style={{ width:7, height:7, borderRadius:"50%", background: active ? c.color : "var(--text3)" }} />
-                <span style={{ fontSize:11, fontWeight:500, color: active ? "var(--text)" : "var(--text3)" }}>
-                  {c.name.split(" ")[0]}
-                </span>
-              </div>
-            );
-          })}
+        {selectedCals && (
+          <button className="btn-icon" onClick={() => setSelectedCals(null)}
+            style={{ fontSize:10, padding:"3px 7px" }}>Reset</button>
+        )}
+
+        {/* ── Study Hub ── */}
+        {courseGroups.length > 0 && (<>
+          <div style={{ width:1, height:14, background:"var(--border)", flexShrink:0, margin:"0 2px" }} />
+          <SectionLabel>Study Hub</SectionLabel>
+          {courseGroups.map(g => <OrgGroupPill key={g.orgId} group={g} icon="🎓" />)}
         </>)}
 
+        {/* ── Organizations ── */}
+        {plainOrgGroups.length > 0 && (<>
+          <div style={{ width:1, height:14, background:"var(--border)", flexShrink:0, margin:"0 2px" }} />
+          <SectionLabel>Organizations</SectionLabel>
+          {plainOrgGroups.map(g => <OrgGroupPill key={g.orgId} group={g} icon="🏢" />)}
+        </>)}
+
+        {/* ── Tasks ── */}
+        <div style={{ width:1, height:14, background:"var(--border)", flexShrink:0, margin:"0 2px" }} />
         <div onClick={() => setShowTasks(t => !t)}
           style={{
             display:"flex", alignItems:"center", gap:5, padding:"4px 10px", borderRadius:20,
@@ -143,10 +199,8 @@ function CalendarPage({ ctx }) {
               .filter(e => sameDay(e.startTime, cell.date.toISOString()))
               .sort((a,b) => new Date(a.startTime) - new Date(b.startTime));
             const isToday = sameDay(cell.date.toISOString(), today.toISOString());
-            const isMobile = window.innerWidth <= 768;
-            const maxShow  = isMobile ? 1 : 2;
-            const show     = dayEvts.slice(0, maxShow);
-            const more     = dayEvts.length - maxShow;
+            const show = dayEvts.slice(0, 2);
+            const more = dayEvts.length - 2;
             return (
               <div key={i}
                 className={`cal-cell${cell.isOtherMonth?" other-month":""}${isToday?" today":""}`}

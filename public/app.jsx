@@ -238,6 +238,26 @@ function removeCalendarId(userId, calId) {
   saveCalendarIds(userId, ids);
 }
 
+// ── Cal→Org mapping (localStorage) ─────────────────────────────────────────
+// Maps calendarId → { orgId, orgName, isCourse } so the filter pills can group
+// org-shared / course-shared calendars under the correct group name.
+function loadCalOrgMap(userId) {
+  try { const r = localStorage.getItem(`usc_${userId}_cal_org_map`); return r ? JSON.parse(r) : {}; } catch(e) { return {}; }
+}
+function saveCalOrgMap(userId, map) {
+  try { localStorage.setItem(`usc_${userId}_cal_org_map`, JSON.stringify(map)); } catch(e) {}
+}
+function setCalOrgEntry(userId, calId, orgId, orgName, isCourse) {
+  const map = loadCalOrgMap(userId);
+  map[String(calId)] = { orgId: String(orgId), orgName, isCourse: !!isCourse };
+  saveCalOrgMap(userId, map);
+}
+function removeCalOrgEntry(userId, calId) {
+  const map = loadCalOrgMap(userId);
+  delete map[String(calId)];
+  saveCalOrgMap(userId, map);
+}
+
 // ✅ Fetch calendars + events from v2 API
 // AFTER
 async function fetchAllCalendars(sid, calPrefs, userId) {
@@ -246,19 +266,8 @@ async function fetchAllCalendars(sid, calPrefs, userId) {
     const res = await apiCall("/users.v2.UserProfileService/GetUserOwnedCalendars", {}, sid);
     const serverOwned = (res.calendarIds || []).map(strId);
     const local = loadCalendarIds(userId);
-  const recoveredJoined = serverOwned.length > 0
-  ? [] // server only returns owned; joined must be inferred another way
-  : [];
-  // Re-hydrate joined from server: attempt GetUserJoinedCalendars if available
-  let serverJoined = [];
-try {
-  const joinedRes = await apiCall("/users.v2.UserProfileService/GetUserJoinedCalendars", {}, sid);
-  serverJoined = (joinedRes.calendarIds || []).map(strId);
-} catch(e) { /* endpoint may not exist — fall back to local */ }
-const merged = {
-  owned:  [...new Set([...serverOwned,   ...local.owned.map(strId)])],
-  joined: [...new Set([...serverJoined,  ...local.joined.map(strId)])],
-};
+    // Merge server IDs into local so we don't lose joined calendars
+    const merged = { owned: [...new Set([...serverOwned, ...local.owned.map(strId)])], joined: local.joined };
     saveCalendarIds(userId, merged);
   } catch(e) {
     console.warn("Could not fetch owned calendars from server:", e.message);
@@ -266,18 +275,34 @@ const merged = {
   const { owned: ownedIds, joined: joinedIds } = loadCalendarIds(userId);
   const allIds = [...new Set([...ownedIds, ...joinedIds].map(strId))];
   const calendars = [], events = [];
+  // Load the org map BEFORE the first loop so subscribed org-cals are correctly flagged
+  const calOrgMapEarly = loadCalOrgMap(userId);
   await Promise.all(allIds.map(async (id) => {
     try {
       const calRes = await calApi("GetCalendar", { calendarId: Number(id) }, sid);
       const isOwner = strId(calRes.ownerUserId) === strId(userId);
       const prefs   = calPrefs[id] || {};
       const color = prefs.color || pickColor(id);
-      calendars.push({
-        id, name: calRes.name, description: calRes.description || "",
-        isOwner, codes: [], color,
-        type: prefs.type || (isOwner ? "personal" : "shared"),
-        isOrgShared: false,
-      });
+      // If this calendar was subscribed from an org/course, treat it as org-shared
+      const orgEntry = calOrgMapEarly[String(id)];
+      if (orgEntry) {
+        calendars.push({
+          id, name: calRes.name, description: calRes.description || "",
+          isOwner, codes: [], color,
+          type: "org-shared",
+          isOrgShared: true,
+          orgId:      orgEntry.orgId,
+          orgName:    orgEntry.orgName || "",
+          orgIsCourse: !!orgEntry.isCourse,
+        });
+      } else {
+        calendars.push({
+          id, name: calRes.name, description: calRes.description || "",
+          isOwner, codes: [], color,
+          type: prefs.type || (isOwner ? "personal" : "shared"),
+          isOrgShared: false,
+        });
+      }
       const calEvents = icalToEvents(calRes.ical, id);
       calEvents.forEach(e => { e.calendarId = id; });
       events.push(...calEvents);
@@ -286,40 +311,47 @@ const merged = {
     }
   }));
 
-  // ── Fetch org-shared calendars ──────────────────────────────────
-  // Load all orgs the user belongs to, then for each org fetch the
-  // calendars its owner has shared, and append them (deduplicated).
+  // ── Tag org-membership calendars ───────────────────────────────
+  // For every org the user belongs to, fetch the shared cal IDs and:
+  //   1. Write calOrgMap entry (orgId, orgName, isCourse) to localStorage
+  //      so the NEXT load's first loop correctly sets isOrgShared.
+  //   2. Upgrade any already-loaded (subscribed/joined) calendar object
+  //      in-memory so THIS load also gets the correct grouping.
+  // We do NOT push new calendars here — only subscribed cals appear.
   try {
     const orgRes = await apiCall("/users.v2.UserProfileService/GetUserOrganizations", {}, sid);
     const orgIds = (orgRes.organizationIds || []).map(strId);
-    const personalIds = new Set(allIds);
 
     await Promise.all(orgIds.map(async (orgId) => {
       try {
+        let orgName = "";
+        let orgIsCourse = false;
+        try {
+          const orgDetail = await apiCall("/organizations.v2.OrganizationService/GetOrganization", { organizationId: Number(orgId) }, sid);
+          orgName = orgDetail.name || "";
+          orgIsCourse = (orgDetail.description || "").startsWith("COURSE:");
+        } catch(e) {}
+
         const calListRes = await apiCall(
           "/organizations.v2.OrganizationCalendarService/GetOrganizationCalendars",
           { organizationId: orgId }, sid
         );
         const sharedIds = (calListRes.calendarIds || []).map(strId);
-        await Promise.all(sharedIds.map(async (id) => {
-          // Skip if already loaded as a personal/joined calendar
-          if (personalIds.has(id) || calendars.find(c => strId(c.id) === id)) return;
-          try {
-            const calRes = await calApi("GetCalendar", { calendarId: Number(id) }, sid);
-            const prefs  = calPrefs[id] || {};
-            const color  = prefs.color || pickColor(id);
-            calendars.push({
-              id, name: calRes.name, description: calRes.description || "",
-              isOwner: false, codes: [], color,
-              type: "org-shared",
-              isOrgShared: true,
-              orgId,
-            });
-            const calEvents = icalToEvents(calRes.ical, id);
-            calEvents.forEach(e => { e.calendarId = id; });
-            events.push(...calEvents);
-          } catch(e) { /* calendar inaccessible — skip silently */ }
-        }));
+
+        sharedIds.forEach(id => {
+          // 1. Always persist the mapping for future loads
+          setCalOrgEntry(userId, id, orgId, orgName, orgIsCourse);
+          // 2. Upgrade in-memory if the user already has this cal loaded (subscribed)
+          const existing = calendars.find(c => strId(c.id) === id);
+          if (existing) {
+            existing.isOrgShared = true;
+            existing.type        = "org-shared";
+            existing.orgId       = orgId;
+            existing.orgName     = orgName || existing.orgName || "";
+            existing.orgIsCourse = orgIsCourse;
+          }
+          // NOT pushing non-subscribed cals — user must explicitly subscribe first
+        });
       } catch(e) { /* org has no shared cals — skip */ }
     }));
   } catch(e) {
@@ -461,6 +493,8 @@ function App() {
     loadCalPrefs: () => loadCalPrefs(currentUser.id),
     saveCalPrefs: (obj) => saveCalPrefs(currentUser.id, obj),
     theme, toggleTheme,
+    setCalOrgEntry: (calId, orgId, orgName, isCourse) => setCalOrgEntry(currentUser.id, calId, orgId, orgName, isCourse),
+    removeCalOrgEntry: (calId) => removeCalOrgEntry(currentUser.id, calId),
   };
 
   return (
@@ -475,11 +509,13 @@ function App() {
           {page==="calendar"       && <CalendarPage      ctx={ctx} />}
           {page==="calendars"      && <CalendarsPage     ctx={ctx} />}
           {page==="organizations"  && <OrganizationsTab  ctx={ctx} />}
+          {page==="studyhub"       && <CoursesPage       ctx={ctx} />}
           {page==="events"         && <EventsPage        ctx={ctx} />}
           {page==="tasks"          && <TaskTrackerPage   ctx={ctx} />}
           {page==="ai"             && <AIServicesPage    ctx={ctx} />}
           {page==="settings"       && <SettingsPage      ctx={ctx} />}
         </div>
+        <BottomNav page={page} setPage={navigateTo} />
       </div>
       {modal && <ModalRouter modal={modal} ctx={ctx} />}
       {/* ── Onboarding tutorial — only renders for brand-new users ── */}
@@ -494,13 +530,33 @@ function App() {
   );
 }
 
+// ─── BOTTOM NAV ───────────────────────────────────────────────────────────────
+function BottomNav({ page, setPage }) {
+  const items = [
+    {id:"dashboard", icon:"⊞",  label:"Home"},
+    {id:"calendar",  icon:"📅", label:"Calendar"},
+    {id:"events",    icon:"🗓",  label:"Events"},
+    {id:"tasks",     icon:"✅", label:"Tasks"},
+  ];
+  return (
+    <div className="bottom-nav">
+      {items.map(item=>(
+        <div key={item.id} className={`bottom-nav-item${page===item.id?" active":""}`} onClick={()=>setPage(item.id)}>
+          <span className="bnav-icon">{item.icon}</span>
+          <span>{item.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── TOAST ────────────────────────────────────────────────────────────────────
 function Toast({ toast }) {
   if (!toast) return null;
   const bg=toast.type==="error"?"rgba(248,113,113,0.15)":"rgba(52,211,153,0.15)";
   const border=toast.type==="error"?"rgba(248,113,113,0.4)":"rgba(52,211,153,0.4)";
   const color=toast.type==="error"?"#f87171":"#34d399";
-  return <div style={{position:"fixed",bottom:24,right:16,zIndex:999,background:bg,border:`1px solid ${border}`,color,borderRadius:12,padding:"13px 20px",fontSize:14,fontWeight:600,boxShadow:"0 8px 32px rgba(0,0,0,0.4)",maxWidth:300,fontFamily:"DM Sans,sans-serif"}}>{toast.msg}</div>;
+  return <div style={{position:"fixed",bottom:80,right:16,zIndex:999,background:bg,border:`1px solid ${border}`,color,borderRadius:12,padding:"13px 20px",fontSize:14,fontWeight:600,boxShadow:"0 8px 32px rgba(0,0,0,0.4)",maxWidth:300,fontFamily:"DM Sans,sans-serif"}}>{toast.msg}</div>;
 }
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
@@ -659,12 +715,11 @@ function AuthPage({ onLogin }) {
         <div className="auth-form-box">
           {/* Mobile-only logo */}
           <div className="auth-mobile-logo">
-            <img src="assets/SchedU.png" style={{ width:38, height:38, borderRadius:10, marginRight:8 }} />
             <span className="logo-sched">Sched</span><span className="logo-u">U</span>
           </div>
 
           <div className="auth-form-heading">
-            {activeTab === "login" ? "Welcome!" : "Create account"}
+            {activeTab === "login" ? "Welcome back" : "Create account"}
           </div>
           <div className="auth-form-sub">
             {activeTab === "login" ? "Sign in to your SchedU account" : "Join SchedU and stay organized"}
@@ -734,6 +789,7 @@ function Sidebar({ page, setPage, ctx, isOpen, collapsed, setCollapsed }) {
     {id:"events",        icon:"🗓",  label:"Events List"},
     {id:"calendars",     icon:"📚", label:"Manage Calendars"},
     {id:"organizations", icon:"🏛",  label:"Organizations"},
+    {id:"studyhub",      icon:"🎓", label:"Study Hub"},
     {id:"tasks",         icon:"✅", label:"Task Tracker"},
     {id:"ai",            icon:"✨", label:"AI Tools"},
     {id:"settings",      icon:"⚙️", label:"Settings"},
@@ -803,7 +859,7 @@ function Sidebar({ page, setPage, ctx, isOpen, collapsed, setCollapsed }) {
 
 // ─── TOPBAR ───────────────────────────────────────────────────────────────────
 function Topbar({ page, ctx, setPage, onMenuClick }) {
-  const titles = {dashboard:"Dashboard",calendar:"Calendar View",events:"Events List",calendars:"Manage Calendars",organizations:"Organizations",tasks:"Task Tracker",ai:"AI Tools",settings:"Settings",about:"About SchedU"};
+  const titles = {dashboard:"Dashboard",calendar:"Calendar View",events:"Events List",calendars:"Manage Calendars",organizations:"Organizations",studyhub:"Study Hub",tasks:"Task Tracker",ai:"AI Tools",settings:"Settings",about:"About SchedU"};
   const { dataLoading, refreshCalendars, theme, toggleTheme } = ctx;
   return (
     <div className="topbar">
@@ -1118,6 +1174,9 @@ function ModalRouter({ modal, ctx }) {
   if(type==="join-prompt")      return <JoinPromptModal      ctx={ctx} orgId={data.orgId} org={data.org} prompt={data.prompt} />;
   if(type==="org-detail")       return <OrgDetailModal       ctx={ctx} orgId={data.orgId} org={data.org} />;
   if(type==="org-members")      return <OrgMembersModal      ctx={ctx} orgId={data.orgId} org={data.org} />;
+  if(type==="create-course")    return <CreateCourseModal    ctx={ctx} />;
+  if(type==="course-detail")    return <CourseDetailModal    ctx={ctx} orgId={data.orgId} course={data.course} />;
+  if(type==="manage-course")    return <ManageCourseModal    ctx={ctx} orgId={data.orgId} course={data.course} />;
   return null;
 }
 

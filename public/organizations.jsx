@@ -23,15 +23,6 @@ const orgMemApi    = (method, body, sid) => apiCall(`${ORG_MEM_BASE}/${method}`,
 const orgCalApi    = (method, body, sid) => apiCall(`${ORG_CAL_BASE}/${method}`, body, sid);
 const orgPromptApi = (method, body, sid) => apiCall(`${ORG_PROMPT_BASE}/${method}`, body, sid);
 
-function loadOrgAuditLog(orgId) {
-  try { const r = localStorage.getItem(`usc_org_audit_${orgId}`); return r ? JSON.parse(r) : []; } catch(e) { return []; }
-}
-function addOrgAuditEntry(orgId, entry) {
-  const log = loadOrgAuditLog(orgId);
-  log.unshift({ ...entry, timestamp: new Date().toISOString() });
-  try { localStorage.setItem(`usc_org_audit_${orgId}`, JSON.stringify(log.slice(0, 100))); } catch(e) {}
-}
-
 // ─── LOCAL STORAGE — track joined org IDs (no server list-my-orgs endpoint) ──
 function loadOrgIds(userId) {
   try {
@@ -87,16 +78,19 @@ function OrganizationsTab({ ctx }) {
   const [joinLoading,  setJoinLoading]  = React.useState(null); // orgId being joined
   const [leaveLoading, setLeaveLoading] = React.useState(null); // orgId being left
   const [search,       setSearch]       = React.useState("");
-  const [subTab,       setSubTab]       = React.useState("browse"); // "browse" | "mine"
+  // Sub-tabs: "orgs" | "myorgs"
+  const [subTab,       setSubTab]       = React.useState("orgs");
   const [refreshKey,   setRefreshKey]   = React.useState(0);
-  const [confirmDlg, setConfirmDlg] = React.useState(null);
+
 
   const userId = currentUser.id;
 
   // Expose a global refresh trigger so modals can reload the org list after mutations
   React.useEffect(() => {
     window.__refreshOrgs = () => setRefreshKey(k => k + 1);
-    return () => { delete window.__refreshOrgs; };
+    // Alias used by CreateCourseModal / ManageCourseModal in studyhub.jsx
+    window.__refreshCourses = () => setRefreshKey(k => k + 1);
+    return () => { delete window.__refreshOrgs; delete window.__refreshCourses; };
   }, []);
 
   // ── Fetch all public org IDs, then fetch details for each
@@ -136,83 +130,62 @@ function OrganizationsTab({ ctx }) {
   // ── Join org (checks for a join prompt first)
   async function handleJoin(orgId) {
     const org = orgDetails[orgId];
-    if (org?.requiresJoinRequest) {
-      setJoinLoading(orgId);
+    const isCourse = (org?.description || "").startsWith("COURSE:");
+    // If org requires approval, check whether there's a join prompt questionnaire
+    if (!isCourse && org?.requiresJoinRequest) {
       try {
         const promptRes = await orgPromptApi("GetCurrentJoinPrompt", { organizationId: Number(orgId) }, sessionId);
-        const promptId = promptRes?.joinPromptEventId;
-        if (!promptId) {
-          showToast("This organization requires approval but has no questionnaire set up yet. Contact the owner.", "error");
-          setJoinLoading(null);
+        if (promptRes?.joinPromptEventId) {
+          const promptDetail = await orgPromptApi("GetJoinPrompt", { joinPromptEventId: promptRes.joinPromptEventId }, sessionId);
+          setModal({ type: "join-prompt", data: { orgId, org, prompt: promptDetail.prompt || "" } });
           return;
         }
-        const promptDetail = await orgPromptApi("GetJoinPrompt", { joinPromptEventId: promptId }, sessionId);
-        setJoinLoading(null);
-        setModal({ type: "join-prompt", data: { orgId, org, prompt: { text: promptDetail.prompt || "", joinPromptEventId: promptId } } });
-        return;
-      } catch(e) {
-        showToast("Could not load join questionnaire: " + (e.message || "unknown error"), "error");
-        setJoinLoading(null);
-        return;
-      }
+      } catch(e) {}
     }
-
-    setConfirmDlg({
-      message: `Join "${org?.name}"?`,
-      description: org?.description ? org.description : undefined,
-      onConfirm: async () => {
-        setJoinLoading(orgId);
-        try {
-          await orgMemApi("JoinOrganization", { organizationId: Number(orgId) }, sessionId);
-          addJoinedOrgId(userId, orgId);
-          addOrgAuditEntry(orgId, { name: currentUser.name || currentUser.email, action: "joined" });
-          showToast(`Joined "${org?.name}"!`);
-          setAllOrgs(prev => [...prev]);
-        } catch(e) {
-          const msg = e.message || "";
-          if (msg.includes("1644") || msg.toLowerCase().includes("already exists") || msg.toLowerCase().includes("membership")) {
-            addJoinedOrgId(userId, orgId);
-            showToast(`You're already a member of "${org?.name}".`);
-            setAllOrgs(prev => [...prev]);
-          } else {
-            showToast(msg || "Failed to join organization.", "error");
-          }
-        } finally {
-          setJoinLoading(null);
-        }
-      }
-    });
+    setJoinLoading(orgId);
+    try {
+      await orgMemApi("JoinOrganization", { organizationId: Number(orgId) }, sessionId);
+      if (isCourse) addJoinedCourseId(userId, orgId);
+      else          addJoinedOrgId(userId, orgId);
+      showToast(`Joined "${org?.name}"!`);
+      setAllOrgs(prev => [...prev]);
+    } catch(e) {
+      showToast(e.message || "Failed to join.", "error");
+    } finally {
+      setJoinLoading(null);
+    }
   }
 
-  function handleLeave(orgId) {
-  const name = orgDetails[orgId]?.name || "this organization";
-  setConfirmDlg({
-    message: `Leave "${name}"?`,
-    danger: true,
-    onConfirm: async () => {
-      setLeaveLoading(orgId);
-      try {
-        await orgMemApi("LeaveOrganization", { organizationId: Number(orgId) }, sessionId);
-        removeOrgId(userId, orgId);
-        addOrgAuditEntry(orgId, { name: currentUser.name || currentUser.email, action: "left" });
-        showToast(`Left "${name}"`);
-        setAllOrgs(prev => [...prev]);
-      } catch(e) {
-        showToast(e.message || "Failed to leave.", "error");
-      } finally {
-        setLeaveLoading(null);
-      }
+  // ── Leave org
+  async function handleLeave(orgId) {
+    const org = orgDetails[orgId];
+    const isCourse = (org?.description || "").startsWith("COURSE:");
+    const name = org?.name || "this organization";
+    if (!window.confirm(`Leave "${name}"?`)) return;
+    setLeaveLoading(orgId);
+    try {
+      await orgMemApi("LeaveOrganization", { organizationId: Number(orgId) }, sessionId);
+      if (isCourse) removeCourseId(userId, orgId);
+      else          removeOrgId(userId, orgId);
+      showToast(`Left "${name}"`);
+      setAllOrgs(prev => [...prev]);
+    } catch(e) {
+      showToast(e.message || "Failed to leave.", "error");
+    } finally {
+      setLeaveLoading(null);
     }
-  });
-}
+  }
 
   // ── Delete org (owner only)
   async function handleDelete(orgId) {
-    const name = orgDetails[orgId]?.name || "this organization";
+    const org = orgDetails[orgId];
+    const isCourse = (org?.description || "").startsWith("COURSE:");
+    const name = org?.name || "this organization";
     if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return;
     try {
       await orgApi("DeleteOrganization", { organizationId: Number(orgId) }, sessionId);
-      removeOrgId(userId, orgId);
+      if (isCourse) removeCourseId(userId, orgId);
+      else          removeOrgId(userId, orgId);
       showToast(`Deleted "${name}"`);
       if (typeof window.__refreshOrgs === "function") window.__refreshOrgs();
       setAllOrgs(prev => prev.filter(id => id !== orgId));
@@ -226,60 +199,61 @@ function OrganizationsTab({ ctx }) {
     .filter(id => {
       const d = orgDetails[id];
       if (!d) return false;
-      if (subTab === "mine") return isOrgJoined(userId, id);
+      // Always hide COURSE: orgs from the organizations tab
+      if ((d.description || "").startsWith("COURSE:")) return false;
+      if (subTab === "myorgs") return isOrgJoined(userId, id);
       const q = search.toLowerCase();
       return !q || d.name?.toLowerCase().includes(q) || d.description?.toLowerCase().includes(q);
     });
 
-  const myOrgCount = allOrgs.filter(id => isOrgJoined(userId, id)).length;
+  const myOrgCount    = allOrgs.filter(id => {
+    const d = orgDetails[id];
+    return d && !(d.description||"").startsWith("COURSE:") && isOrgJoined(userId, id);
+  }).length;
 
   return (
-  <div>
-    {confirmDlg && (
-      <ConfirmDialog
-        {...confirmDlg}
-        onClose={() => setConfirmDlg(null)}
-      />
-    )}
-    {/* ── Sub-tabs + Create button */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16, flexWrap:"wrap", gap:10 }}>
-        <div style={{ display:"flex", gap:0, background:"var(--surface2)", borderRadius:10, padding:3, border:"1px solid var(--border)" }}>
-          {[["browse","🌐 Browse"], ["mine", `👥 My Orgs${myOrgCount ? ` (${myOrgCount})` : ""}`]].map(([t, l]) => (
+    <div>
+      {/* ── Sub-tabs + Create button */}
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:20, flexWrap:"wrap", gap:10 }}>
+        <div style={{ display:"flex", gap:4, background:"var(--surface2)", borderRadius:10, padding:3, border:"1px solid var(--border)" }}>
+          {[
+            ["orgs",   "🏛 Organizations"],
+            ["myorgs", `👥 My Orgs${myOrgCount ? ` (${myOrgCount})` : ""}`],
+          ].map(([t, l]) => (
             <div key={t}
-              onClick={() => setSubTab(t)}
+              onClick={() => { setSubTab(t); setSearch(""); setLabelFilter("all"); }}
               style={{
                 padding:"7px 18px", borderRadius:8, fontSize:13, fontWeight:600, cursor:"pointer",
                 background: subTab===t ? "var(--accent)" : "transparent",
                 color: subTab===t ? "#fff" : "var(--text2)",
-                transition:"all .15s",
+                transition:"all .15s", whiteSpace:"nowrap",
               }}>
               {l}
             </div>
           ))}
         </div>
-        <button className="btn btn-primary btn-sm"
-          onClick={() => setModal({ type:"create-org" })}>
-          + New Organization
-        </button>
+        <button className="btn btn-primary btn-sm" onClick={() => setModal({ type:"create-org" })} style={{ whiteSpace:"nowrap" }}>+ New Organization</button>
       </div>
 
-      {/* ── Search bar (browse tab only) */}
-      {subTab === "browse" && (
-        <div style={{ marginBottom:16 }}>
+      {/* ── Search bar */}
+      {(
+        <div style={{ marginBottom:20 }}>
           <input
             className="form-input"
             placeholder="Search organizations…"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            style={{ maxWidth:360 }}
+            style={{ maxWidth:520, display:"block" }}
           />
         </div>
       )}
 
+
+
       {/* ── Loading state */}
       {loading && (
-        <div style={{ textAlign:"center", padding:"40px 0", color:"var(--text3)", fontSize:13 }}>
-          Loading organizations…
+        <div style={{ textAlign:"center", padding:"48px 0", color:"var(--text3)", fontSize:13 }}>
+          Loading…
         </div>
       )}
 
@@ -287,78 +261,103 @@ function OrganizationsTab({ ctx }) {
       {!loading && (
         <div className="cards-grid">
           {filteredOrgs.length === 0 && (
-            <div style={{ gridColumn:"1/-1", textAlign:"center", padding:"40px 0", color:"var(--text3)", fontSize:13 }}>
-              {subTab === "mine" ? "You haven't joined any organizations yet." : "No organizations found."}
+            <div style={{ gridColumn:"1/-1", textAlign:"center", padding:"48px 0", color:"var(--text3)", fontSize:13 }}>
+              {subTab === "myorgs" ? "You haven't joined any organizations yet." : "No organizations found."}
             </div>
           )}
 
           {filteredOrgs.map(id => {
             const org = orgDetails[id];
             if (!org) return null;
-            const joined  = isOrgJoined(userId, id);
-            const owned   = isOrgOwned(userId, id);
+            const isCourse    = (org.description || "").startsWith("COURSE:");
+            const rawDesc     = isCourse ? org.description.slice("COURSE:".length).trim() : org.description;
+            const deptMatch   = isCourse ? rawDesc.match(/^\[([^\]]+)\]\s*/) : null;
+            const dept        = deptMatch ? deptMatch[1].toUpperCase() : "";
+            const displayDesc = deptMatch ? rawDesc.slice(deptMatch[0].length) : rawDesc;
+            const joined  = isCourse ? isCourseJoined(userId, id) : isOrgJoined(userId, id);
+            const owned   = isCourse ? isCourseOwned(userId, id)  : isOrgOwned(userId, id);
             const col     = orgColor(id);
             const initials = orgInitials(org.name);
             const isJoining  = joinLoading  === id;
             const isLeaving  = leaveLoading === id;
 
             return (
-              <div key={id} className="cal-card" style={{ position:"relative", overflow:"hidden" }}>
-                {/* Color stripe */}
-                <div style={{ position:"absolute", top:0, left:0, right:0, height:3, background:col, borderRadius:"14px 14px 0 0" }} />
+              <div key={id} className="cal-card" style={{ display:"flex", flexDirection:"column" }}>
 
-                {/* Org header */}
-                <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10, marginTop:4 }}>
+                {/* ── Card header: avatar + title + badges */}
+                <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:10 }}>
                   <div style={{
-                    width:38, height:38, borderRadius:10, background:col+"22",
-                    border:`1.5px solid ${col}55`, display:"flex", alignItems:"center",
-                    justifyContent:"center", fontWeight:800, fontSize:14, color:col, flexShrink:0,
+                    width:42, height:42, borderRadius:10,
+                    background: col+"28",
+                    border: `1.5px solid ${col}50`,
+                    display:"flex", alignItems:"center", justifyContent:"center",
+                    fontWeight:800, fontSize:14, color:col, flexShrink:0,
                     fontFamily:"var(--font-head)",
                   }}>
                     {initials}
                   </div>
-                  <div style={{ minWidth:0 }}>
-                    <div className="cal-card-name" style={{ marginBottom:2 }}>{org.name}</div>
-                    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{
+                      fontFamily:"var(--font-head)", fontSize:15, fontWeight:700,
+                      color:"var(--text)", lineHeight:1.3, marginBottom:5,
+                      wordBreak:"break-word",
+                    }}>
+                      {org.name}
+                    </div>
+                    {/* Status badges */}
+                    <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
                       {owned && (
-                        <span style={{ fontSize:10, padding:"2px 7px", borderRadius:4, background:col+"22", color:col, fontWeight:700, border:`1px solid ${col}44` }}>Owner</span>
+                        <span style={{ fontSize:10, padding:"2px 8px", borderRadius:20,
+                          background: col+"28", color:col, fontWeight:700,
+                          border:`1px solid ${col}44` }}>{isCourse ? "Admin" : "Owner"}</span>
                       )}
                       {joined && !owned && (
-                        <span style={{ fontSize:10, padding:"2px 7px", borderRadius:4, background:"rgba(52,211,153,0.15)", color:"var(--green)", fontWeight:700, border:"1px solid rgba(52,211,153,0.3)" }}>Member</span>
+                        <span style={{ fontSize:10, padding:"2px 8px", borderRadius:20,
+                          background:"rgba(52,211,153,0.15)", color:"var(--green)", fontWeight:700,
+                          border:"1px solid rgba(52,211,153,0.3)" }}>{isCourse ? "Enrolled" : "Member"}</span>
                       )}
-                      {org.requiresJoinRequest && (
-                        <span style={{ fontSize:10, padding:"2px 7px", borderRadius:4, background:"rgba(251,191,36,0.12)", color:"#fbbf24", fontWeight:700, border:"1px solid rgba(251,191,36,0.25)" }}>Approval</span>
+                      {isCourse && dept && (
+                        <span style={{ fontSize:10, padding:"2px 8px", borderRadius:20,
+                          background:"var(--surface3,var(--surface2))", color:"var(--text3)", fontWeight:600,
+                          border:"1px solid var(--border)" }}>{dept}</span>
+                      )}
+                      {!isCourse && org.requiresJoinRequest && (
+                        <span style={{ fontSize:10, padding:"2px 8px", borderRadius:20,
+                          background:"rgba(251,191,36,0.12)", color:"var(--yellow)", fontWeight:700,
+                          border:"1px solid rgba(251,191,36,0.25)" }}>Approval Required</span>
                       )}
                     </div>
                   </div>
                 </div>
 
-                {/* Description */}
-                {org.description && (
-                  <div className="cal-card-type" style={{ marginBottom:10, lineHeight:1.5 }}>
-                    {org.description}
+                {/* ── Description */}
+                {displayDesc && (
+                  <div style={{ fontSize:12, color:"var(--text2)", marginBottom:10, lineHeight:1.5 }}>
+                    {displayDesc}
                   </div>
                 )}
 
-                {/* Created date */}
-                {org.createdAt && (
+                {/* ── Created date (non-course only) */}
+                {!isCourse && org.createdAt && (
                   <div style={{ fontSize:11, color:"var(--text3)", marginBottom:12 }}>
                     Created {fmtDate(org.createdAt.seconds ? new Date(Number(org.createdAt.seconds) * 1000).toISOString() : org.createdAt)}
                   </div>
                 )}
 
-                {/* Actions */}
-                <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                  {/* View shared calendars */}
+                {/* ── Actions (pushed to bottom) */}
+                <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:"auto" }}>
+                  {/* View calendars/schedules (member or owner) */}
                   {joined && (
                     <button className="btn btn-ghost btn-sm"
-                      onClick={() => setModal({ type:"org-detail", data:{ orgId:id, org } })}>
-                      View Calendars
+                      onClick={() => isCourse
+                        ? setModal({ type:"course-detail", data:{ orgId:id, course:{ id, name:org.name, description:displayDesc, dept } } })
+                        : setModal({ type:"org-detail",    data:{ orgId:id, org } })}>
+                      📅 {isCourse ? "Schedules" : "Calendars"}
                     </button>
                   )}
 
-                  {/* View members (any member or owner) */}
-                  {joined && (
+                  {/* Members (non-course members/owners) */}
+                  {joined && !isCourse && (
                     <button className="btn btn-ghost btn-sm"
                       onClick={() => setModal({ type:"org-members", data:{ orgId:id, org } })}>
                       👥 Members
@@ -368,8 +367,10 @@ function OrganizationsTab({ ctx }) {
                   {/* Owner: manage */}
                   {owned && (
                     <button className="btn btn-ghost btn-sm"
-                      onClick={() => setModal({ type:"manage-org", data:{ orgId:id, org } })}>
-                      Manage
+                      onClick={() => isCourse
+                        ? setModal({ type:"manage-course", data:{ orgId:id, course:{ id, name:org.name, description:displayDesc, dept } } })
+                        : setModal({ type:"manage-org",    data:{ orgId:id, org } })}>
+                      {isCourse ? "⚙ Manage" : "Manage"}
                     </button>
                   )}
 
@@ -378,7 +379,7 @@ function OrganizationsTab({ ctx }) {
                     <button className="btn btn-primary btn-sm"
                       onClick={() => handleJoin(id)}
                       disabled={isJoining}>
-                      {isJoining ? "Joining…" : "Join"}
+                      {isJoining ? (isCourse ? "Enrolling…" : "Joining…") : (isCourse ? "Enroll" : "Join")}
                     </button>
                   )}
 
@@ -404,13 +405,17 @@ function OrganizationsTab({ ctx }) {
             );
           })}
 
-          {/* Create new org card (browse tab) */}
-          {subTab === "browse" && (
+          {/* ── Create placeholder card */}
+          {subTab === "orgs" && (
             <div className="cal-card"
-              style={{ border:"1.5px dashed var(--border2)", cursor:"pointer", alignItems:"center",
-                display:"flex", flexDirection:"column", justifyContent:"center", minHeight:120 }}
+              style={{
+                border:"1.5px dashed var(--border2)", cursor:"pointer",
+                display:"flex", flexDirection:"column",
+                alignItems:"center", justifyContent:"center",
+                minHeight:160, gap:8,
+              }}
               onClick={() => setModal({ type:"create-org" })}>
-              <div style={{ fontSize:24, marginBottom:6, opacity:.5 }}>🏛</div>
+              <div style={{ fontSize:26, color:"var(--text3)", lineHeight:1 }}>+</div>
               <div style={{ color:"var(--text3)", fontSize:13, fontWeight:600 }}>Create Organization</div>
             </div>
           )}
@@ -500,7 +505,7 @@ function CreateOrgModal({ ctx }) {
         </div>
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={closeModal}>Cancel</button>
-          <button className="btn btn-primary" onClick={submit} disabled={loading}>
+          <button className="btn btn-primary btn-block" onClick={submit} disabled={loading}>
             {loading ? "Creating…" : "Create Organization"}
           </button>
         </div>
@@ -563,6 +568,7 @@ function ManageOrgModal({ ctx, orgId, org }) {
     setCalLoading(true);
     try {
       const res = await orgCalApi("GetOrganizationCalendars", { organizationId: Number(orgId) }, sessionId);
+      setSharedCalIds((res.calendarIds || []).map(String));
     } catch(e) {
       // 404 = no calendars shared yet — that's fine
       setSharedCalIds([]);
@@ -678,7 +684,6 @@ function ManageOrgModal({ ctx, orgId, org }) {
           <button style={sectionBtnStyle("calendars")} onClick={() => setActiveSection("calendars")}>📅 Shared Calendars</button>
           <button style={sectionBtnStyle("join-prompt")} onClick={() => setActiveSection("join-prompt")}>📋 Join Questionnaire</button>
           <button style={sectionBtnStyle("members")} onClick={() => setActiveSection("members")}>👥 Members</button>
-          <button style={sectionBtnStyle("activity")}    onClick={() => setActiveSection("activity")}>📋 Activity</button>
           <button style={sectionBtnStyle("settings")}  onClick={() => setActiveSection("settings")}>⚙️ Settings</button>
         </div>
 
@@ -889,62 +894,6 @@ function ManageOrgModal({ ctx, orgId, org }) {
               </button>
             </div>
           )}
-
-          {activeSection === "activity" && (() => {
-            const log = loadOrgAuditLog(orgId);
-            return (
-              <div>
-                <div style={{ fontSize:12, color:"var(--text3)", marginBottom:14 }}>
-                  Membership activity for this organization — visible only to you as owner.
-                </div>
-                {log.length === 0 ? (
-                  <div style={{ textAlign:"center", padding:"40px 0", color:"var(--text3)" }}>
-                    <div style={{ fontSize:32, marginBottom:8 }}>📋</div>
-                    <div style={{ fontSize:13 }}>No activity recorded yet.</div>
-                    <div style={{ fontSize:12, marginTop:4 }}>Join and leave events will appear here.</div>
-                  </div>
-                ) : (
-                  <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                    {log.map((entry, i) => {
-                      const isJoin = entry.action === "joined";
-                      return (
-                        <div key={i} style={{ display:"flex", alignItems:"center", gap:12,
-                          padding:"10px 14px", borderRadius:10,
-                          background:"var(--surface2)", border:"1px solid var(--border)" }}>
-                          <div style={{ width:32, height:32, borderRadius:"50%", flexShrink:0,
-                            background: PALETTE[i % PALETTE.length] + "22",
-                            border:`1.5px solid ${PALETTE[i % PALETTE.length]}55`,
-                            display:"flex", alignItems:"center", justifyContent:"center",
-                            fontSize:12, fontWeight:700, color: PALETTE[i % PALETTE.length] }}>
-                            {(entry.name||"?")[0].toUpperCase()}
-                          </div>
-                          <div style={{ flex:1, minWidth:0 }}>
-                            <div style={{ fontSize:13, fontWeight:600, color:"var(--text)",
-                              whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
-                              {entry.name || "Unknown"}
-                            </div>
-                            <div style={{ fontSize:11, color:"var(--text3)", marginTop:1 }}>
-                              {new Date(entry.timestamp).toLocaleString("en-PH", {
-                                month:"short", day:"numeric", year:"numeric",
-                                hour:"2-digit", minute:"2-digit"
-                              })}
-                            </div>
-                          </div>
-                          <span style={{ fontSize:11, fontWeight:700, padding:"3px 9px", borderRadius:20,
-                            whiteSpace:"nowrap", flexShrink:0,
-                            background: isJoin ? "rgba(52,211,153,0.12)" : "rgba(248,113,113,0.12)",
-                            color: isJoin ? "var(--green)" : "var(--red)",
-                            border: isJoin ? "1px solid rgba(52,211,153,0.3)" : "1px solid rgba(248,113,113,0.3)" }}>
-                            {entry.action}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
         </div>
 
         <div className="modal-footer">
@@ -967,40 +916,23 @@ function JoinPromptModal({ ctx, orgId, org, prompt }) {
   const col    = orgColor(orgId);
 
   async function submit() {
-  if (!answer.trim()) { setError("Please answer the questionnaire before submitting."); return; }
-  setLoading(true); setError("");
-  try {
-    const joinPromptEventId = prompt?.joinPromptEventId;
-    console.log("[Step 1] Calling CreateJoinResponse with joinPromptEventId =", joinPromptEventId);
-
-    const responseRes = await apiCall(
-      "/organizations.v2.OrganizationJoinResponseService/CreateJoinResponse",
-      { joinPromptEventId: joinPromptEventId, response: answer.trim() },
-      sessionId
-    );
-    console.log("[Step 1] CreateJoinResponse result =", responseRes);
-
-    const joinResponseEventId = responseRes?.joinResponseEventId;
-    if (!joinResponseEventId) throw new Error("No response ID returned from server.");
-
-    console.log("[Step 2] Calling CreateJoinRequest with joinResponseEventId =", joinResponseEventId);
-    await apiCall(
-      "/organizations.v2.OrganizationJoinRequestService/CreateJoinRequest",
-      { joinResponseEventId: joinResponseEventId },
-      sessionId
-    );
-    console.log("[Step 2] CreateJoinRequest success");
-
-    showToast(`Request submitted to "${org.name}"! Waiting for approval.`);
-    if (typeof window.__refreshOrgs === "function") window.__refreshOrgs();
-    closeModal();
-  } catch(e) {
-    console.error("[JoinPrompt] Error at step:", e.message, e);
-    setError(e.message || "Failed to submit join request.");
-  } finally {
-    setLoading(false);
+    if (!answer.trim()) { setError("Please answer the questionnaire before submitting."); return; }
+    setLoading(true); setError("");
+    try {
+      // The server JoinOrganization call handles the actual membership;
+      // the answer is not persisted server-side yet (join response proto is stubbed).
+      // We join normally and include the answer as best-effort context.
+      await orgMemApi("JoinOrganization", { organizationId: Number(orgId) }, sessionId);
+      addJoinedOrgId(userId, orgId);
+      showToast(`Request submitted to "${org.name}"!`);
+      if (typeof window.__refreshOrgs === "function") window.__refreshOrgs();
+      closeModal();
+    } catch(e) {
+      setError(e.message || "Failed to submit join request.");
+    } finally {
+      setLoading(false);
+    }
   }
-}
 
   return (
     <div className="modal-overlay" onClick={closeModal}>
@@ -1034,7 +966,7 @@ function JoinPromptModal({ ctx, orgId, org, prompt }) {
               📋 Questionnaire
             </div>
             <div style={{ fontSize:14, color:"var(--text)", lineHeight:1.7, whiteSpace:"pre-wrap" }}>
-              {prompt?.text || prompt}
+              {prompt}
             </div>
           </div>
 
@@ -1054,7 +986,7 @@ function JoinPromptModal({ ctx, orgId, org, prompt }) {
 
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={closeModal}>Cancel</button>
-          <button className="btn btn-primary" onClick={submit} disabled={loading}>
+          <button className="btn btn-primary btn-block" onClick={submit} disabled={loading}>
             {loading ? "Submitting…" : "Submit Request"}
           </button>
         </div>
@@ -1078,6 +1010,7 @@ function OrgDetailModal({ ctx, orgId, org }) {
     setLoading(true);
     try {
       const res = await orgCalApi("GetOrganizationCalendars", { organizationId: Number(orgId) }, sessionId);
+      const ids = (res.calendarIds || []).map(String);
       setSharedCalIds(ids);
 
       // Fetch calendar details
