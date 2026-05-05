@@ -166,6 +166,61 @@ function TaskProgressWidget({ tasks, compact }) {
 }
 
 // ─── TASK TRACKER PAGE ────────────────────────────────────────────
+// ─── CHECKLIST PROGRESS BAR ──────────────────────────────────────
+// Memoized so only the bar whose pct changed re-renders — preventing the
+// snap-then-animate effect from firing on every bar when any one changes.
+// Shared hook for smooth one-way progress bar animation.
+// - On first mount: sets width instantly, no animation.
+// - On pct change: smoothly animates from the previous value to the new one.
+// - Never resets to 0 on re-render (prevPctRef survives React reconciliation).
+function useProgressBar(pct) {
+  const barRef     = React.useRef(null);
+  const prevPctRef = React.useRef(null); // null = not yet mounted
+  React.useEffect(() => {
+    const el = barRef.current;
+    if (!el) return;
+    if (prevPctRef.current === null) {
+      // First mount — place bar at correct position instantly, no animation
+      el.style.transition = "none";
+      el.style.width = pct + "%";
+      prevPctRef.current = pct;
+      return;
+    }
+    if (prevPctRef.current === pct) return; // nothing changed, skip
+    const prev = prevPctRef.current;
+    prevPctRef.current = pct;
+    // Snap to previous value first so the transition has a real start point,
+    // then use double-rAF so the browser actually paints that frame before
+    // we kick off the animated transition to the new value.
+    el.style.transition = "none";
+    el.style.width = prev + "%";
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        el.style.transition = "width 0.4s cubic-bezier(0.4,0,0.2,1), background 0.3s ease";
+        el.style.width = pct + "%";
+      });
+    });
+  }, [pct]);
+  return barRef;
+}
+
+const ChecklistBar = React.memo(function ChecklistBar({ pct }) {
+  const barRef = useProgressBar(pct);
+  return (
+    <div ref={barRef}
+      style={{ height:"100%", background:pct===100?"var(--green)":"var(--accent)", borderRadius:2 }} />
+  );
+});
+
+// ─── SUBJECT-LEVEL PROGRESS BAR ──────────────────────────────────
+const SubjectBar = React.memo(function SubjectBar({ pct }) {
+  const barRef = useProgressBar(pct);
+  return (
+    <div ref={barRef}
+      style={{ height:"100%", background:pct===100?"var(--green)":"var(--accent)", borderRadius:2 }} />
+  );
+});
+
 function TaskTrackerPage({ ctx }) {
   const { sessionId, myCalendars, events, setEvents, showToast } = ctx;
 
@@ -285,7 +340,7 @@ function TaskTrackerPage({ ctx }) {
     finally { setFormLoading(false); }
   }
 
-  async function toggleCheck(taskId, checkId) {
+  const toggleCheck = React.useCallback(async function toggleCheck(taskId, checkId) {
     const cal  = getTaskCal(); if (!cal) return;
     const task = tasks.find(t => t.id === taskId); if (!task) return;
     // Save scroll for ALL cards and page before update
@@ -309,9 +364,10 @@ function TaskTrackerPage({ ctx }) {
         window.scrollTo({ top: savedPageY, behavior: "instant" });
       });
     } catch(e) { showToast("Failed to update.", "error"); }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, sessionId]);
 
-  async function setManualStatus(taskId, status) {
+  const setManualStatus = React.useCallback(async function setManualStatus(taskId, status) {
     const cal  = getTaskCal(); if (!cal) return;
     const task = tasks.find(t=>t.id===taskId); if (!task) return;
     const newEvent = taskToEvent({...task,status},cal.id);
@@ -320,9 +376,10 @@ function TaskTrackerPage({ ctx }) {
       await calApi("WriteCalendar", { calendarId: Number(cal.id), ical: eventsToIcalB64(calEvts) }, sessionId);
       setEvents(prev=>prev.map(e=>e.id===taskId?newEvent:e));
     } catch(e) { showToast("Failed to update.","error"); }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, sessionId]);
 
-  async function duplicateTask(task) {
+  const duplicateTask = React.useCallback(async function duplicateTask(task) {
     const cal = getTaskCal(); if (!cal) return;
     try {
       const newTask  = { ...task, id:uid_gen(), title:task.title + " (Copy)", createdAt:new Date().toISOString() };
@@ -332,7 +389,8 @@ function TaskTrackerPage({ ctx }) {
       setEvents(prev=>[...prev, newEvent]);
       showToast("Task duplicated!");
     } catch(e) { showToast("Failed to duplicate.","error"); }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, sessionId]);
 
   async function deleteTask(taskId) {
     const cal = getTaskCal(); if (!cal) return;
@@ -352,8 +410,19 @@ function TaskTrackerPage({ ctx }) {
     });
   }
 
+  // Stable object so TaskCard (which is React.memo'd) doesn't re-render when parent does
+  const cardCallbacks = React.useMemo(() => ({
+    onDuplicate:   duplicateTask,
+    onEdit:        openEdit,
+    onDelete:      confirmDeleteTask,
+    onToggleCheck: toggleCheck,
+    onSetStatus:   setManualStatus,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [duplicateTask, toggleCheck, setManualStatus]);
+
   // ─── TASK CARD ──────────────────────────────────────────────────
-  function TaskCard({ task }) {
+  // Defined inline but callbacks are stable refs — see usage below
+  const TaskCard = React.memo(function TaskCard({ task, onDuplicate, onEdit, onDelete, onToggleCheck, onSetStatus, scrollRef }) {
     const checkDone  = task.checklist?.filter(i=>i.checked).length||0;
     const checkTotal = task.checklist?.length||0;
     const pct = checkTotal ? Math.round((checkDone/checkTotal)*100) : null;
@@ -368,10 +437,6 @@ function TaskTrackerPage({ ctx }) {
       return new Date("1970-01-01T"+timeStr+":00").toLocaleTimeString([],{hour:"numeric",minute:"2-digit",hour12:true});
     }
 
-    const hasStart = task.startDate || task.startTime;
-    const hasEnd   = task.endDate   || task.endTime;
-    const hasDue   = task.dueDate;
-
     const cardColor = task.color || "var(--accent)";
     return (
       <div className="task-card" style={{ marginBottom:0, padding:16, display:"flex", flexDirection:"column", gap:10, borderLeft:`3px solid ${cardColor}`, boxShadow:`0 0 10px ${task.color ? task.color + "55" : "rgba(108,99,255,0.25)"}` }}>
@@ -381,9 +446,9 @@ function TaskTrackerPage({ ctx }) {
           <span style={{ fontSize:18, lineHeight:1, marginTop:2, flexShrink:0 }}>{TYPE_ICON[task.type]||"📌"}</span>
           <div style={{ fontWeight:700, fontSize:14, lineHeight:1.4, flex:1, minWidth:0, wordBreak:"break-word" }}>{task.title}</div>
           <div style={{ display:"flex", alignItems:"center", gap:4, flexShrink:0, marginLeft:4 }}>
-            <button title="Duplicate" className="task-btn-edit" onClick={()=>duplicateTask(task)} style={{ fontSize:11 }}>⧉</button>
-            <button className="task-btn-edit" onClick={()=>openEdit(task)}>Edit</button>
-            <button className="task-btn-del" onClick={()=>confirmDeleteTask(task.id)}>✕</button>
+            <button title="Duplicate" className="task-btn-edit" onClick={()=>onDuplicate(task)} style={{ fontSize:11 }}>⧉</button>
+            <button className="task-btn-edit" title="Edit" onClick={()=>onEdit(task)}>✏️</button>
+            <button className="task-btn-del" onClick={()=>onDelete(task.id)}>✕</button>
           </div>
         </div>
 
@@ -393,7 +458,7 @@ function TaskTrackerPage({ ctx }) {
           <span className="task-chip" style={{ color:PRIORITY_COLOR[task.priority]||"var(--text3)", borderColor:PRIORITY_COLOR[task.priority]||"var(--border)" }}>{task.priority}</span>
           <span className="task-chip">{task.type}</span>
           {checkTotal === 0 ? (
-            <select value={task.status} onChange={e=>setManualStatus(task.id,e.target.value)}
+            <select value={task.status} onChange={e=>onSetStatus(task.id,e.target.value)}
               style={{ fontSize:10, background:"var(--surface2)", border:"1px solid var(--border)", borderRadius:4, padding:"2px 6px", color:STATUS_COLOR[task.status], fontWeight:600, cursor:"pointer", marginLeft:"auto" }}>
               <option value="not-started">Not Started</option>
               <option value="in-progress">In Progress</option>
@@ -443,13 +508,13 @@ function TaskTrackerPage({ ctx }) {
               <span style={{ fontSize:11, color:"var(--text2)", fontWeight:600 }}>{checkDone}/{checkTotal} · <span style={{ color:pct===100?"var(--green)":pct>0?"var(--accent)":"var(--text3)" }}>{pct}%</span></span>
             </div>
             <div style={{ height:3, background:"var(--surface3)", borderRadius:2, marginBottom:6, overflow:"hidden" }}>
-              <div style={{ height:"100%", background:pct===100?"var(--green)":"var(--accent)", borderRadius:2, width:`${pct}%`, transition:"width .3s" }} />
+              <ChecklistBar pct={pct} />
             </div>
             <div style={{ maxHeight:130, overflowY:"auto", border:"1px solid var(--border)", borderRadius:6 }}
-              ref={el => { if (el) checkScrollRefs.current[task.id] = el; }}>
+              ref={scrollRef}>
               {task.checklist.map(item => (
                 <div key={item.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 10px", borderBottom:"1px solid var(--border)" }}>
-                  <input type="checkbox" checked={item.checked} onChange={()=>toggleCheck(task.id,item.id)}
+                  <input type="checkbox" checked={item.checked} onChange={()=>onToggleCheck(task.id,item.id)}
                     style={{ accentColor:"var(--accent)", width:14, height:14, flexShrink:0, cursor:"pointer" }} />
                   <span style={{ fontSize:12, textDecoration:item.checked?"line-through":"none", color:item.checked?"var(--text3)":"var(--text)", flex:1, lineHeight:1.4 }}>{item.label}</span>
                 </div>
@@ -459,10 +524,14 @@ function TaskTrackerPage({ ctx }) {
         )}
       </div>
     );
-  }
+  });
 
   // ─── SUBJECT VIEW ────────────────────────────────────────────────
-  function SubjectView() {
+  // Defined as a memoized component (not a plain inner function) so React can
+  // reuse its DOM across re-renders instead of unmounting/remounting it every
+  // time any state in the parent changes — which was causing all SubjectBars
+  // and ChecklistBars to reset to 0 and re-animate on every checkbox tick.
+  const SubjectView = React.useCallback(function SubjectView() {
     const subjects = [...new Set(filtered.map(t => t.subject||"(No Subject)"))].sort();
     if (subjects.length === 0) return <EmptyState />;
     return subjects.map(subj => {
@@ -484,16 +553,17 @@ function TaskTrackerPage({ ctx }) {
           </div>
           {!isCol && <>
             <div style={{ height:3, background:"var(--surface3)", borderRadius:2, marginBottom:12, overflow:"hidden" }}>
-              <div style={{ height:"100%", background:pct===100?"var(--green)":"var(--accent)", width:`${pct}%`, borderRadius:2 }} />
+              <SubjectBar pct={pct} />
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))", gap:12, marginBottom:12 }}>
-              {subjTasks.map(task => <TaskCard key={task.id} task={task} />)}
+              {subjTasks.map(task => <TaskCard key={task.id} task={task} {...cardCallbacks} scrollRef={el => { if (el) checkScrollRefs.current[task.id] = el; }} />)}
             </div>
           </>}
         </div>
       );
     });
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, collapsed, cardCallbacks, checkScrollRefs]);
 
   function EmptyState() {
     return (
@@ -695,7 +765,7 @@ function TaskTrackerPage({ ctx }) {
         filtered.length === 0
           ? <EmptyState />
           : <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))", gap:12 }}>
-              {filtered.map(task => <TaskCard key={task.id} task={task} />)}
+              {filtered.map(task => <TaskCard key={task.id} task={task} {...cardCallbacks} scrollRef={el => { if (el) checkScrollRefs.current[task.id] = el; }} />)}
             </div>
       )}
     </div>
