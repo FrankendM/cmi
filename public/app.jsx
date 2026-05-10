@@ -12,10 +12,12 @@
 //  LOAD ORDER in index.html (order matters — app.jsx must be first):
 //    <script type="text/babel" src="app.jsx"></script>
 //    <script type="text/babel" src="groupCalendar.jsx"></script>
+//    <script type="text/babel" src="organizations.jsx"></script>
 //    <script type="text/babel" src="monthProgress.jsx"></script>
 //    <script type="text/babel" src="onboardingTutorial.jsx"></script>
 //    <script type="text/babel" src="calendarView.jsx"></script>
 //    <script type="text/babel" src="taskManager.jsx"></script>
+//    (studyhub.jsx removed — fully merged into organizations.jsx)
 //
 //  WHAT USES THE DATABASE vs LOCALSTORAGE:
 //    ✅ DATABASE    — user accounts, calendars, events, members, access codes, tasks
@@ -459,7 +461,6 @@ function App() {
           {page==="calendar"       && <CalendarPage      ctx={ctx} />}
           {page==="calendars"      && <CalendarsPage     ctx={ctx} />}
           {page==="organizations"  && <OrganizationsTab  ctx={ctx} />}
-          {page==="studyhub"        && <StudyHubTab       ctx={ctx} />}
           {page==="events"         && <EventsPage        ctx={ctx} />}
           {page==="tasks"          && <TaskTrackerPage   ctx={ctx} />}
           {page==="ai"             && <AIServicesPage    ctx={ctx} />}
@@ -724,7 +725,6 @@ function Sidebar({ page, setPage, ctx, isOpen, collapsed, setCollapsed }) {
     {id:"events",        icon:"🗓",  label:"Events List"},
     {id:"calendars",     icon:"📚", label:"Manage Calendars"},
     {id:"organizations", icon:"🏛",  label:"Organizations"},
-    {id:"studyhub",      icon:"🎓",  label:"Study Hub"},
     {id:"tasks",         icon:"✅", label:"Task Tracker"},
     {id:"ai",            icon:"✨", label:"AI Tools"},
     {id:"settings",      icon:"⚙️", label:"Settings"},
@@ -794,7 +794,7 @@ function Sidebar({ page, setPage, ctx, isOpen, collapsed, setCollapsed }) {
 
 // ─── TOPBAR ───────────────────────────────────────────────────────────────────
 function Topbar({ page, ctx, setPage, onMenuClick }) {
-  const titles = {dashboard:"Dashboard",calendar:"Calendar View",events:"Events List",calendars:"Manage Calendars",organizations:"Organizations", studyhub:"Study Hub",tasks:"Task Tracker",ai:"AI Tools",settings:"Settings",about:"About SchedU"};
+  const titles = {dashboard:"Dashboard",calendar:"Calendar View",events:"Events List",calendars:"Manage Calendars",organizations:"Organizations",tasks:"Task Tracker",ai:"AI Tools",settings:"Settings",about:"About SchedU"};
   const { dataLoading, refreshCalendars, theme, toggleTheme } = ctx;
   return (
     <div className="topbar">
@@ -1218,11 +1218,13 @@ function ModalRouter({ modal, ctx }) {
   if(type==="calendar-events")  return <CalendarEventsModal  ctx={ctx} calendar={data} />;
   if(type==="manage-calendar")  return <ManageCalendarModal  ctx={ctx} calendar={data} />;
   if(type==="day-events")       return <DayEventsModal       ctx={ctx} date={data.date} />;
-  if(type==="create-course")     return <CreateCourseModal     ctx={ctx} />;
-  if(type==="manage-course")     return <ManageCourseModal     ctx={ctx} courseId={data.courseId} course={data.course} />;
-  if(type==="course-detail")     return <CourseDetailModal     ctx={ctx} courseId={data.courseId} course={data.course} />;
-  if(type==="course-members")    return <CourseMembersModal    ctx={ctx} courseId={data.courseId} course={data.course} />;
-  if(type==="create-org")        return <CreateOrgModal        ctx={ctx} />;
+  if(type==="create-group")      return <CreateGroupModal      ctx={ctx} />;
+  // Legacy course modal routes — redirect to new group modals
+  if(type==="create-course")     return <CreateGroupModal      ctx={ctx} />;
+  if(type==="manage-course")     return <ManageOrgModal        ctx={ctx} orgId={data.courseId} org={{...data.course, type:"study-hub"}} />;
+  if(type==="course-detail")     return <OrgDetailModal        ctx={ctx} orgId={data.courseId} org={{...data.course, type:"study-hub"}} />;
+  if(type==="course-members")    return <OrgMembersModal       ctx={ctx} orgId={data.courseId} org={{...data.course, type:"study-hub"}} />;
+  if(type==="create-org")        return <CreateGroupModal       ctx={ctx} />;
   if(type==="manage-org")       return <ManageOrgModal       ctx={ctx} orgId={data.orgId} org={data.org} />;
   if(type==="join-prompt")      return <JoinPromptModal      ctx={ctx} orgId={data.orgId} org={data.org} prompt={data.prompt} />;
   if(type==="org-detail")       return <OrgDetailModal       ctx={ctx} orgId={data.orgId} org={data.org} />;
@@ -1412,4 +1414,4 @@ function AboutContent() {
 
     </div>
   );
-}
+} 
