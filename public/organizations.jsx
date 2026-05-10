@@ -34,6 +34,7 @@ const ORG_PROMPT_BASE = "/organizations.v2.OrganizationJoinPromptService";
 const ORG_ROLE_BASE   = "/organizations.v2.OrganizationMemberRoleService";
 const ORG_LABEL_BASE  = "/organizations.v2.OrganizationLabelService";
 const ORG_AUDIT_BASE  = "/organizations.v2.OrganizationAuditLogService";
+const ORG_MOD_BASE    = "/organizations.v2.OrganizationModerationService";
 
 const orgApi       = (m, b, s) => apiCall(`${ORG_BASE}/${m}`,        b, s);
 const orgMemApi    = (m, b, s) => apiCall(`${ORG_MEM_BASE}/${m}`,    b, s);
@@ -42,6 +43,7 @@ const orgPromptApi = (m, b, s) => apiCall(`${ORG_PROMPT_BASE}/${m}`, b, s);
 const orgRoleApi   = (m, b, s) => apiCall(`${ORG_ROLE_BASE}/${m}`,   b, s);
 const orgLabelApi  = (m, b, s) => apiCall(`${ORG_LABEL_BASE}/${m}`,  b, s);
 const orgAuditApi  = (m, b, s) => apiCall(`${ORG_AUDIT_BASE}/${m}`,  b, s);
+const orgModApi    = (m, b, s) => apiCall(`${ORG_MOD_BASE}/${m}`,    b, s);
 
 async function loadOrgMembersHistory(orgId, sessionId) {
   try {
@@ -192,7 +194,7 @@ function OrganizationsTab({ ctx }) {
         try {
           const r = await orgRoleApi("GetMemberRole", { organizationId: Number(id), memberUserId: userId }, sessionId);
           const role = (r.role || "").toLowerCase();
-          membership[id] = role === "owner" ? "owner" : "member";
+          membership[id] = role === "owner" ? "owner" : role === "admin" ? "admin" : "member";
         } catch(e) {
           membership[id] = "member";
         }
@@ -447,6 +449,7 @@ function OrganizationsTab({ ctx }) {
             if (!org) return null;
             const joined     = !!membershipMap[id];
             const owned      = membershipMap[id] === "owner";
+            const isAdmin    = membershipMap[id] === "admin";
             const col        = orgColor(id);
             const initials   = orgInitials(org.name);
             const isStudyHub = org.type === "study-hub";
@@ -489,9 +492,14 @@ function OrganizationsTab({ ctx }) {
                       {owned && (
                         <span style={{ fontSize:10, padding:"2px 7px", borderRadius:4, background:col+"22", color:col, fontWeight:700, border:`1px solid ${col}44` }}>Owner</span>
                       )}
-                      {joined && !owned && (
+                      {joined && !owned && !isAdmin && (
                         <span style={{ fontSize:10, padding:"2px 7px", borderRadius:4, background:"rgba(52,211,153,0.15)", color:"var(--green)", fontWeight:700, border:"1px solid rgba(52,211,153,0.3)" }}>
                           {isStudyHub ? "Enrolled" : "Member"}
+                        </span>
+                      )}
+                      {isAdmin && (
+                        <span style={{ fontSize:10, padding:"2px 7px", borderRadius:4, background:"rgba(251,191,36,0.12)", color:"#fbbf24", fontWeight:700, border:"1px solid rgba(251,191,36,0.25)" }}>
+                          Admin
                         </span>
                       )}
                       {org.requiresJoinRequest && (
@@ -527,7 +535,7 @@ function OrganizationsTab({ ctx }) {
                       👥 Members
                     </button>
                   )}
-                  {owned && (
+                  {(owned || isAdmin) && (
                     <button className="btn btn-ghost btn-sm"
                       onClick={() => setModal({ type:"manage-org", data:{ orgId:id, org } })}>
                       Manage
@@ -745,6 +753,7 @@ function ManageOrgModal({ ctx, orgId, org }) {
 
   const [members,        setMembers]        = React.useState([]);
   const [membersLoading, setMembersLoading] = React.useState(false);
+  const [confirmDlg,     setConfirmDlg]     = React.useState(null);
 
   const [joinRequests,          setJoinRequests]          = React.useState([]);
   const [joinRequestsLoading,   setJoinRequestsLoading]   = React.useState(false);
@@ -782,10 +791,17 @@ function ManageOrgModal({ ctx, orgId, org }) {
       const res = await orgMemApi("GetOrganizationMembers", { organizationId: Number(orgId) }, sessionId);
       const ids = res.memberUserIds || [];
       const resolved = await Promise.all(ids.map(async (uid) => {
+        let name = `User #${uid}`;
+        let role = "member";
         try {
           const u = await apiCall("/users.v2.UserService/GetUser", { userId: uid }, sessionId);
-          return { id: uid, name: [u.firstName, u.middleName, u.lastName].filter(Boolean).join(" ") || `User #${uid}` };
-        } catch(e) { return { id: uid, name: `User #${uid}` }; }
+          name = [u.firstName, u.middleName, u.lastName].filter(Boolean).join(" ") || name;
+        } catch(e) {}
+        try {
+          const r = await orgRoleApi("GetMemberRole", { organizationId: Number(orgId), memberUserId: uid }, sessionId);
+          role = r.role || "member";
+        } catch(e) {}
+        return { id: uid, name, role };
       }));
       setMembers(resolved);
     } catch(e) { setMembers([]); }
@@ -965,6 +981,7 @@ function ManageOrgModal({ ctx, orgId, org }) {
 
   return (
     <div className="modal-overlay" onClick={closeModal}>
+      {confirmDlg && <ConfirmDialog {...confirmDlg} onClose={() => setConfirmDlg(null)} />}
       <div className="modal modal-lg" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <div style={{ display:"flex", alignItems:"center", gap:10, flex:1 }}>
@@ -1170,14 +1187,78 @@ function ManageOrgModal({ ctx, orgId, org }) {
                 </div>
               ) : (
                 <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-                  {members.map((m, i) => (
-                    <div key={m.id || i} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderRadius:10, background:"var(--surface2)", border:"1px solid var(--border)" }}>
-                      <div style={{ width:30, height:30, borderRadius:"50%", background: PALETTE[i%PALETTE.length]+"33", border:`1.5px solid ${PALETTE[i%PALETTE.length]}55`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:700, color: PALETTE[i%PALETTE.length], flexShrink:0 }}>
-                        {m.name[0]?.toUpperCase() || "?"}
+                  {members.map((m, i) => {
+                    const isAdmin = m.role === "admin" || m.role === "moderator";
+                    const isOwner = m.role === "owner";
+                    const roleColor = isOwner ? "var(--accent)" : isAdmin ? "var(--green)" : "var(--text3)";
+                    const roleLabel = isOwner ? "Owner" : isAdmin ? "Admin" : "Member";
+                    return (
+                      <div key={m.id || i} style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderRadius:10, background:"var(--surface2)", border:"1px solid var(--border)" }}>
+                        {/* Avatar */}
+                        <div style={{ width:32, height:32, borderRadius:"50%", background: PALETTE[i%PALETTE.length]+"33", border:`1.5px solid ${PALETTE[i%PALETTE.length]}55`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:700, color: PALETTE[i%PALETTE.length], flexShrink:0 }}>
+                          {m.name[0]?.toUpperCase() || "?"}
+                        </div>
+
+                        {/* Name + role badge */}
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:14, fontWeight:600, color:"var(--text)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{m.name}</div>
+                          <div style={{ fontSize:11, fontWeight:600, color: roleColor, marginTop:1 }}>{roleLabel}</div>
+                        </div>
+
+                        {/* Actions — only for non-owners */}
+                        {!isOwner && (
+                          <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+                            {/* Promote / Demote */}
+                            <button
+                              className="btn btn-sm btn-ghost"
+                              style={{ fontSize:11, padding:"3px 9px", color: isAdmin ? "var(--text2)" : "var(--green)", border:`1px solid ${isAdmin ? "var(--border)" : "rgba(52,211,153,0.4)"}` }}
+                              onClick={() => {
+                                const newRole = isAdmin ? "user" : "admin";
+                                setConfirmDlg({
+                                  message: isAdmin ? `Demote ${m.name}?` : `Promote ${m.name} to Admin?`,
+                                  description: isAdmin
+                                    ? "They will be set back to a regular member."
+                                    : "They will have admin privileges in this organization.",
+                                  confirmLabel: isAdmin ? "Demote" : "Promote",
+                                  onConfirm: async () => {
+                                    try {
+                                      await orgRoleApi("SetMemberRole", { organizationId: Number(orgId), memberUserId: m.id, role: newRole }, sessionId);
+                                      showToast(`${m.name} is now ${newRole === "admin" ? "an Admin" : "a Member"}.`);
+                                      setMembers(prev => prev.map(x => x.id === m.id ? { ...x, role: newRole } : x));
+                                    } catch(e) { showToast(e.message || "Failed to update role.", "error"); }
+                                  },
+                                });
+                              }}>
+                              {isAdmin ? "⬇ Demote" : "⬆ Promote"}
+                            </button>
+
+                            {/* Remove member */}
+                            <button
+                              className="btn btn-sm btn-danger"
+                              style={{ fontSize:11, padding:"3px 9px" }}
+                              onClick={() => setConfirmDlg({
+                                message: `Remove ${m.name}?`,
+                                description: "They will be removed from the organization and will need to rejoin.",
+                                danger: true,
+                                confirmLabel: "Remove",
+                                onConfirm: async () => {
+                                  try {
+                                    await orgModApi("BanMember", { organizationId: Number(orgId), memberUserId: m.id, reason: "Removed by owner" }, sessionId);
+                                    try {
+                                      await orgModApi("UnbanMember", { organizationId: Number(orgId), memberUserId: m.id, reason: "Kicked, not banned" }, sessionId);
+                                    } catch(e) {}
+                                    showToast(`${m.name} has been removed.`);
+                                    setMembers(prev => prev.filter(x => x.id !== m.id));
+                                  } catch(e) { showToast(e.message || "Failed to remove member.", "error"); }
+                                },
+                              })}>
+                              ✕ Remove
+                            </button>
+                          </div>
+                        )}
                       </div>
-                      <div style={{ fontSize:14, fontWeight:600, color:"var(--text)" }}>{m.name}</div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>

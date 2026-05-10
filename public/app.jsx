@@ -39,9 +39,172 @@
 //      spotlight overlay can find and highlight them.
 // ============================================================
 
-const { useState, useEffect, useCallback } = React;
+const { useState, useEffect, useCallback, useRef } = React;
 
 const API_BASE = "https://countmein-api.dcism.org";
+
+// ─── NOTIFICATION HELPERS ─────────────────────────────────────────────────────
+function requestNotificationPermission() {
+  if ("Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission();
+  }
+}
+
+function sendBrowserNotification(title, body) {
+  if ("Notification" in window && Notification.permission === "granted") {
+    new Notification(title, { body, icon: "assets/SchedU.png" });
+  }
+}
+
+// ─── NOTIFICATION POLLER HOOK ─────────────────────────────────────────────────
+function useNotificationPoller(sessionId, currentUser, addNotification) {
+  const prevJoinRequests = useRef({});
+  const prevJoinStatus   = useRef({});
+  const prevRole         = useRef({});
+  const prevEventCount   = useRef({});
+  const initialized      = useRef(false);
+
+  useEffect(() => {
+    if (!sessionId || !currentUser) return;
+
+    // ── Reset ALL state when user/session changes (prevents cross-account bleed) ──
+    prevJoinRequests.current = {};
+    prevJoinStatus.current   = {};
+    prevRole.current         = {};
+    prevEventCount.current   = {};
+    initialized.current      = false;
+
+    async function poll() {
+      console.log("[Poller] poll() fired — sessionId present:", !!sessionId, "| userId:", currentUser?.id);
+      try {
+        // ── 1. Get all orgs the user is part of ──
+        const orgRes = await apiCall("/organizations.v2.OrganizationService/GetUserOrganizations", {}, sessionId);
+        const orgIds = orgRes.organizationIds || [];
+        console.log("[Poller] orgIds found:", orgIds);
+
+        for (const orgId of orgIds) {
+          const numId = Number(orgId);
+
+          // ── 2. Get current user's role in this org ──
+          let role = "user";
+          try {
+            const r = await apiCall("/organizations.v2.OrganizationMemberRoleService/GetMemberRole", { organizationId: numId, memberUserId: currentUser.id }, sessionId);
+            role = (r.role || "user").toLowerCase();
+            console.log(`[Poller] org ${orgId} role:`, role);
+          } catch(e) { console.warn(`[Poller] GetMemberRole failed for org ${orgId}:`, e.message); }
+
+          // ── 3. Role change notification — only after first poll, only on actual change ──
+          if (initialized.current) {
+            const prev = prevRole.current[orgId];
+            if (prev !== undefined && prev !== role) {
+              let orgName = `Org #${orgId}`;
+              try {
+                const d = await apiCall("/organizations.v2.OrganizationService/GetOrganization", { organizationId: numId }, sessionId);
+                orgName = d.name || orgName;
+              } catch(e) { console.warn(`[Poller] GetOrganization failed for org ${orgId}:`, e.message); }
+              const msg = role === "admin"
+                ? `You've been promoted to Admin in ${orgName}!`
+                : `Your role in ${orgName} has been updated to Member.`;
+              addNotification({ title: "Role Updated", body: msg, icon: "🏅", time: new Date() });
+              sendBrowserNotification("Role Updated", msg);
+            }
+          }
+          prevRole.current[orgId] = role;
+
+          // ── 4. New join requests (owner only) ──
+          if (role === "owner") {
+            try {
+              const jRes = await apiCall("/organizations.v2.OrganizationJoinRequestService/GetOpenJoinRequests", { organizationId: numId }, sessionId);
+              const count = (jRes.joinRequestEventIds || []).length;
+              console.log(`[Poller] org ${orgId} open join requests:`, count);
+              if (initialized.current) {
+                const prev = prevJoinRequests.current[orgId];
+                if (prev !== undefined && count > prev) {
+                  let orgName = `Org #${orgId}`;
+                  try {
+                    const d = await apiCall("/organizations.v2.OrganizationService/GetOrganization", { organizationId: numId }, sessionId);
+                    orgName = d.name || orgName;
+                  } catch(e) { console.warn(`[Poller] GetOrganization (join req) failed for org ${orgId}:`, e.message); }
+                  const msg = `${count - prev} new join request${count - prev > 1 ? "s" : ""} in ${orgName}.`;
+                  addNotification({ title: "New Join Request", body: msg, icon: "📥", time: new Date() });
+                  sendBrowserNotification("New Join Request", msg);
+                }
+              }
+              prevJoinRequests.current[orgId] = count;
+            } catch(e) { console.warn(`[Poller] GetOpenJoinRequests failed for org ${orgId}:`, e.message); }
+          }
+        }
+
+        // ── 5. Join request status change (member side) ──
+        try {
+          const myReqRes = await apiCall("/organizations.v2.OrganizationJoinRequestService/GetUserJoinRequests", {}, sessionId);
+          const myReqIds = myReqRes.joinRequestEventIds || [];
+          console.log("[Poller] my join request ids:", myReqIds);
+          for (const reqId of myReqIds) {
+            try {
+              const req = await apiCall("/organizations.v2.OrganizationJoinRequestService/GetJoinRequest", { joinRequestEventId: reqId }, sessionId);
+              const status = (req.status || "").toLowerCase();
+              console.log(`[Poller] join request ${reqId} status:`, status);
+              if (initialized.current) {
+                const prev = prevJoinStatus.current[reqId];
+                if (prev !== undefined && prev !== status && (status === "accepted" || status === "rejected" || status === "retracted")) {
+                  const msg = status === "accepted"
+                    ? "Your join request was approved! You are now a member."
+                    : status === "retracted"
+                      ? "Your join request was retracted."
+                      : "Your join request was rejected.";
+                  addNotification({
+                    title: status === "accepted" ? "Request Approved ✅" : status === "retracted" ? "Request Retracted" : "Request Rejected",
+                    body: msg,
+                    icon: status === "accepted" ? "✅" : "❌",
+                    time: new Date(),
+                  });
+                  sendBrowserNotification(status === "accepted" ? "Request Approved" : "Request Rejected", msg);
+                }
+              }
+              prevJoinStatus.current[reqId] = status;
+            } catch(e) { console.warn(`[Poller] GetJoinRequest failed for reqId ${reqId}:`, e.message); }
+          }
+        } catch(e) { console.warn("[Poller] GetUserJoinRequests failed:", e.message); }
+
+        // ── 6. New events — only track org-shared calendars (not personal) ──
+        try {
+          const calRes = await calApi("GetCalendars", {}, sessionId);
+          const calIds = (calRes.calendarIds || []).map(String);
+          console.log("[Poller] calendars found:", calIds);
+          for (const calId of calIds) {
+            try {
+              const cal = await calApi("GetCalendar", { calendarId: Number(calId) }, sessionId);
+              console.log(`[Poller] cal ${calId} (${cal.name})`);
+
+              const evts = icalToEvents(cal.ical || "", calId);
+              const nonTaskEvts = evts.filter(e => !(e.title || "").startsWith("TASK:"));
+              const count = nonTaskEvts.length;
+              const prev  = prevEventCount.current[calId];
+              console.log(`[Poller] cal ${calId} count=${count} prev=${prev} initialized=${initialized.current}`);
+
+              if (prev !== undefined && count > prev) {
+                const calName = cal.name || `Calendar #${calId}`;
+                const diff = count - prev;
+                const msg = `${diff} new event${diff > 1 ? "s" : ""} added to ${calName}.`;
+                addNotification({ title: "New Event 📅", body: msg, icon: "📅", time: new Date() });
+                sendBrowserNotification("New Event Added", msg);
+              }
+              prevEventCount.current[calId] = count;
+            } catch(e) { console.warn(`[Poller] GetCalendar failed for calId ${calId}:`, e.message); }
+          }
+        } catch(e) { console.warn("[Poller] GetCalendars failed:", e.message); }
+
+        initialized.current = true;
+        console.log("[Poller] poll() complete — initialized set to true");
+      } catch(e) { console.error("[Poller] poll() top-level crash:", e.message, e); }
+    }
+
+    poll();
+    const interval = setInterval(poll, 1000);
+    return () => clearInterval(interval);
+  }, [sessionId, currentUser?.id]);
+}
 
 async function apiCall(endpoint, body = {}, sessionId = null) {
   const headers = { "Content-Type": "application/json" };
@@ -359,7 +522,28 @@ function App() {
   const [toast,         setToast]        = useState(null);
   const [sidebarOpen,   setSidebarOpen]  = useState(false);
   // ── Onboarding tutorial — true only for brand-new registrations ──
-  const [showTutorial,  setShowTutorial] = useState(false);
+  const [showTutorial,    setShowTutorial]    = useState(false);
+  const [notifications, setNotifications] = useState(() => {
+  try {
+    const stored = localStorage.getItem("usc_notifications");
+    return stored ? JSON.parse(stored) : [];
+  } catch(e) { return []; }
+});
+  const [notifOpen,       setNotifOpen]        = useState(false);
+  const [notifUnread,     setNotifUnread]      = useState(0);
+
+  const addNotification = useCallback((notif) => {
+  setNotifications(prev => [notif, ...prev].slice(0, 30));
+  setNotifUnread(n => n + 1);
+}, []);
+
+useEffect(() => {
+  try {
+    localStorage.setItem("usc_notifications", JSON.stringify(notifications));
+  } catch(e) {}
+}, [notifications]);
+
+  useNotificationPoller(sessionId, currentUser, addNotification);
   const [theme,         setTheme]        = useState(() => {
     try { return localStorage.getItem("usc_theme") || "dark"; } catch(e) { return "dark"; }
   });
@@ -414,6 +598,7 @@ function App() {
     saveSession(sid);
     setCurrentUser(user);
     setSessionId(sid);
+    requestNotificationPermission();
     // Only fire tutorial if this is a new registration AND they haven't seen it
     if (isNewUser && !hasTutorialBeenSeen(user.id)) {
       setShowTutorial(true);
@@ -477,6 +662,7 @@ function App() {
     loadCalPrefs: () => loadCalPrefs(currentUser.id),
     saveCalPrefs: (obj) => saveCalPrefs(currentUser.id, obj),
     theme, toggleTheme,
+    notifications, setNotifications, notifOpen, setNotifOpen, notifUnread, setNotifUnread,
   };
 
   return (
@@ -825,22 +1011,87 @@ function Sidebar({ page, setPage, ctx, isOpen, collapsed, setCollapsed }) {
 // ─── TOPBAR ───────────────────────────────────────────────────────────────────
 function Topbar({ page, ctx, setPage, onMenuClick }) {
   const titles = {dashboard:"Dashboard",calendar:"Calendar View",events:"Events List",calendars:"Manage Calendars",organizations:"Organizations",tasks:"Task Tracker",ai:"AI Tools",settings:"Settings",about:"About SchedU"};
-  const { dataLoading, refreshCalendars, theme, toggleTheme } = ctx;
+  const { dataLoading, refreshCalendars, theme, toggleTheme, notifications, notifOpen, setNotifOpen, notifUnread, setNotifUnread } = ctx;
+
+  function handleBellClick() {
+    setNotifOpen(o => !o);
+    if (!notifOpen) setNotifUnread(0);
+  }
+
   return (
-    <div className="topbar">
+    <div className="topbar" style={{ position:"relative" }}>
       <button className="hamburger" onClick={onMenuClick}>☰</button>
       <div className="topbar-title font-head">{titles[page]||page}</div>
+
+      {/* Notification bell */}
+      <div style={{ position:"relative", display:"inline-flex" }}>
+        <button className="btn-icon" title="Notifications" onClick={handleBellClick} style={{ fontSize:16, position:"relative" }}>
+          🔔
+          {notifUnread > 0 && (
+            <span style={{
+              position:"absolute", top:2, right:2, width:8, height:8,
+              borderRadius:"50%", background:"#ef4444",
+              border:"1.5px solid var(--bg)",
+            }} />
+          )}
+        </button>
+
+        {/* Dropdown */}
+        {notifOpen && (
+          <div style={{
+            position:"absolute", top:"calc(100% + 8px)", right:0, width:300,
+            background:"var(--surface)", border:"1.5px solid var(--border)",
+            borderRadius:12, boxShadow:"0 8px 32px rgba(0,0,0,0.25)",
+            zIndex:9999, overflow:"hidden",
+          }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ padding:"12px 16px", borderBottom:"1px solid var(--border)", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+              <span style={{ fontWeight:700, fontSize:13, color:"var(--text)" }}>Notifications</span>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                {notifications.length > 0 && (
+                  <button className="btn-icon" style={{ fontSize:11, color:"var(--text3)" }}
+                    onClick={() => ctx.setNotifications([])}>
+                    Clear all
+                  </button>
+                )}
+                <button className="btn-icon" style={{ fontSize:11 }} onClick={() => setNotifOpen(false)}>✕</button>
+              </div>
+            </div>
+            <div style={{ maxHeight:320, overflowY:"auto" }}>
+              {notifications.length === 0 ? (
+                <div style={{ padding:"32px 16px", textAlign:"center", color:"var(--text3)", fontSize:13 }}>
+                  <div style={{ fontSize:24, marginBottom:8 }}>🔕</div>
+                  No notifications yet
+                </div>
+              ) : notifications.map((n, i) => (
+                <div key={i} style={{
+                  padding:"10px 16px", borderBottom:"1px solid var(--border2)",
+                  display:"flex", gap:10, alignItems:"flex-start",
+                }}>
+                  <span style={{ fontSize:18, flexShrink:0, marginTop:1 }}>{n.icon}</span>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:12, fontWeight:700, color:"var(--text)", marginBottom:2 }}>{n.title}</div>
+                    <div style={{ fontSize:11, color:"var(--text2)", lineHeight:1.5 }}>{n.body}</div>
+                    <div style={{ fontSize:10, color:"var(--text3)", marginTop:3 }}>
+                      {n.time ? new Date(n.time).toLocaleTimeString("en-PH", { hour:"2-digit", minute:"2-digit" }) : ""}
+                    </div>
+                  </div>
+                  <button className="btn-icon" style={{ fontSize:11, color:"var(--text3)", flexShrink:0, marginTop:1 }}
+                    onClick={() => ctx.setNotifications(prev => prev.filter((_, j) => j !== i))}>
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
       <button className="theme-toggle" title={theme==="dark"?"Switch to Light Mode":"Switch to Dark Mode"} onClick={toggleTheme}>
         {theme==="dark" ? "☀️" : "🌙"}
       </button>
-      {/* data-tutorial="topbar-refresh" — spotlit on the last tutorial step */}
-      <button
-        className="btn-icon"
-        title="Refresh"
-        onClick={refreshCalendars}
-        style={{fontSize:13}}
-        data-tutorial="topbar-refresh"
-      >
+      <button className="btn-icon" title="Refresh" onClick={refreshCalendars} style={{fontSize:13}} data-tutorial="topbar-refresh">
         {dataLoading?"⟳":"↻"}
       </button>
     </div>
