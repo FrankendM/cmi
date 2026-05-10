@@ -74,7 +74,10 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
     prevEventCount.current   = {};
     initialized.current      = false;
 
+    let isPolling = false;
     async function poll() {
+      if (isPolling) { console.log("[Poller] skipped — previous poll still running"); return; }
+      isPolling = true;
       console.log("[Poller] poll() fired — sessionId present:", !!sessionId, "| userId:", currentUser?.id);
       try {
         // ── 1. Get all orgs the user is part of ──
@@ -94,9 +97,11 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
           } catch(e) { console.warn(`[Poller] GetMemberRole failed for org ${orgId}:`, e.message); }
 
           // ── 3. Role change notification — only after first poll, only on actual change ──
+          // Skip if prev is undefined (org just appeared for the first time, e.g. user just got accepted)
+          const KNOWN_ROLES = ["owner", "admin", "member", "user"];
           if (initialized.current) {
             const prev = prevRole.current[orgId];
-            if (prev !== undefined && prev !== role) {
+            if (prev !== undefined && prev !== role && KNOWN_ROLES.includes(prev)) {
               let orgName = `Org #${orgId}`;
               try {
                 const d = await apiCall("/organizations.v2.OrganizationService/GetOrganization", { organizationId: numId }, sessionId);
@@ -117,18 +122,22 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
               const jRes = await apiCall("/organizations.v2.OrganizationJoinRequestService/GetOpenJoinRequests", { organizationId: numId }, sessionId);
               const count = (jRes.joinRequestEventIds || []).length;
               console.log(`[Poller] org ${orgId} open join requests:`, count);
-              if (initialized.current) {
-                const prev = prevJoinRequests.current[orgId];
-                if (prev !== undefined && count > prev) {
-                  let orgName = `Org #${orgId}`;
-                  try {
-                    const d = await apiCall("/organizations.v2.OrganizationService/GetOrganization", { organizationId: numId }, sessionId);
-                    orgName = d.name || orgName;
-                  } catch(e) { console.warn(`[Poller] GetOrganization (join req) failed for org ${orgId}:`, e.message); }
-                  const msg = `${count - prev} new join request${count - prev > 1 ? "s" : ""} in ${orgName}.`;
-                  addNotification({ title: "New Join Request", body: msg, icon: "📥", time: new Date() });
-                  sendBrowserNotification("New Join Request", msg);
-                }
+              const prev = prevJoinRequests.current[orgId];
+              // Fire if count grew, OR first time we see pending requests already exist
+              const shouldNotifyJoin = count > 0 && (
+                (prev !== undefined && count > prev) ||
+                (prev === undefined && initialized.current)
+              );
+              if (shouldNotifyJoin) {
+                let orgName = `Org #${orgId}`;
+                try {
+                  const d = await apiCall("/organizations.v2.OrganizationService/GetOrganization", { organizationId: numId }, sessionId);
+                  orgName = d.name || orgName;
+                } catch(e) { console.warn(`[Poller] GetOrganization (join req) failed for org ${orgId}:`, e.message); }
+                const newCount = prev === undefined ? count : count - prev;
+                const msg = `${newCount} pending join request${newCount > 1 ? "s" : ""} in ${orgName}.`;
+                addNotification({ title: "New Join Request", body: msg, icon: "📥", time: new Date() });
+                sendBrowserNotification("New Join Request", msg);
               }
               prevJoinRequests.current[orgId] = count;
             } catch(e) { console.warn(`[Poller] GetOpenJoinRequests failed for org ${orgId}:`, e.message); }
@@ -145,22 +154,39 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
               const req = await apiCall("/organizations.v2.OrganizationJoinRequestService/GetJoinRequest", { joinRequestEventId: reqId }, sessionId);
               const status = (req.status || "").toLowerCase();
               console.log(`[Poller] join request ${reqId} status:`, status);
-              if (initialized.current) {
-                const prev = prevJoinStatus.current[reqId];
-                if (prev !== undefined && prev !== status && (status === "accepted" || status === "rejected" || status === "retracted")) {
+              const isResolved = status === "accepted" || status === "rejected" || status === "retracted";
+              const prev = prevJoinStatus.current[reqId];
+              // Fire if status changed to resolved, OR if first time we see it already resolved (accepted while app was closed)
+              const shouldNotify = isResolved && (
+                (prev !== undefined && prev !== status) ||
+                (prev === undefined && initialized.current)
+              );
+              if (shouldNotify) {
+                  // ── Resolve org name via: joinResponseEventId → GetJoinResponse → joinPromptEventId → GetJoinPrompt → organizationId → GetOrganization ──
+                  let orgName = "";
+                  try {
+                    const joinResp = await apiCall("/organizations.v2.OrganizationJoinResponseService/GetJoinResponse", { joinResponseEventId: req.joinResponseEventId }, sessionId);
+                    const joinPrompt = await apiCall("/organizations.v2.OrganizationJoinPromptService/GetJoinPrompt", { joinPromptEventId: joinResp.joinPromptEventId }, sessionId);
+                    const orgData = await apiCall("/organizations.v2.OrganizationService/GetOrganization", { organizationId: joinPrompt.organizationId }, sessionId);
+                    orgName = orgData.name || "";
+                  } catch(e) { console.warn(`[Poller] org name lookup failed for reqId ${reqId}:`, e.message); }
+
+                  const orgLabel = orgName ? ` from "${orgName}"` : "";
                   const msg = status === "accepted"
-                    ? "Your join request was approved! You are now a member."
+                    ? `You have been accepted${orgLabel}. You are now a member!`
                     : status === "retracted"
-                      ? "Your join request was retracted."
-                      : "Your join request was rejected.";
+                      ? `Your join request${orgLabel} was retracted.`
+                      : `You have been rejected${orgLabel}.`;
                   addNotification({
-                    title: status === "accepted" ? "Request Approved ✅" : status === "retracted" ? "Request Retracted" : "Request Rejected",
+                    title: status === "accepted" ? "Request Approved ✅" : status === "retracted" ? "Request Retracted" : "Request Rejected ❌",
                     body: msg,
                     icon: status === "accepted" ? "✅" : "❌",
                     time: new Date(),
                   });
-                  sendBrowserNotification(status === "accepted" ? "Request Approved" : "Request Rejected", msg);
-                }
+                  sendBrowserNotification(
+                    status === "accepted" ? "Request Approved" : status === "retracted" ? "Request Retracted" : "Request Rejected",
+                    msg
+                  );
               }
               prevJoinStatus.current[reqId] = status;
             } catch(e) { console.warn(`[Poller] GetJoinRequest failed for reqId ${reqId}:`, e.message); }
@@ -183,7 +209,7 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
               const prev  = prevEventCount.current[calId];
               console.log(`[Poller] cal ${calId} count=${count} prev=${prev} initialized=${initialized.current}`);
 
-              if (prev !== undefined && count > prev) {
+              if (initialized.current && prev !== undefined && count > prev) {
                 const calName = cal.name || `Calendar #${calId}`;
                 const diff = count - prev;
                 const msg = `${diff} new event${diff > 1 ? "s" : ""} added to ${calName}.`;
@@ -198,6 +224,7 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
         initialized.current = true;
         console.log("[Poller] poll() complete — initialized set to true");
       } catch(e) { console.error("[Poller] poll() top-level crash:", e.message, e); }
+      finally { isPolling = false; }
     }
 
     poll();
