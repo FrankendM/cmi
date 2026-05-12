@@ -110,7 +110,7 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
               const msg = role === "admin"
                 ? `You've been promoted to Admin in ${orgName}!`
                 : `Your role in ${orgName} has been updated to Member.`;
-              addNotification({ title: "Role Updated", body: msg, icon: "🏅", time: new Date() });
+                addNotification({ title: "Role Updated", body: msg, icon: "🏅", time: new Date(), page: "organizations" });
               sendBrowserNotification("Role Updated", msg);
             }
           }
@@ -136,7 +136,7 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
                 } catch(e) { console.warn(`[Poller] GetOrganization (join req) failed for org ${orgId}:`, e.message); }
                 const newCount = prev === undefined ? count : count - prev;
                 const msg = `${newCount} pending join request${newCount > 1 ? "s" : ""} in ${orgName}.`;
-                addNotification({ title: "New Join Request", body: msg, icon: "📥", time: new Date() });
+                addNotification({ title: "New Join Request", body: msg, icon: "📥", time: new Date(), page: "organizations" });
                 sendBrowserNotification("New Join Request", msg);
               }
               prevJoinRequests.current[orgId] = count;
@@ -182,6 +182,7 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
                     body: msg,
                     icon: status === "accepted" ? "✅" : "❌",
                     time: new Date(),
+                    page: "organizations",
                   });
                   sendBrowserNotification(
                     status === "accepted" ? "Request Approved" : status === "retracted" ? "Request Retracted" : "Request Rejected",
@@ -213,7 +214,7 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
                 const calName = cal.name || `Calendar #${calId}`;
                 const diff = count - prev;
                 const msg = `${diff} new event${diff > 1 ? "s" : ""} added to ${calName}.`;
-                addNotification({ title: "New Event 📅", body: msg, icon: "📅", time: new Date() });
+                addNotification({ title: "New Event 📅", body: msg, icon: "📅", time: new Date(), page: "calendar" });
                 sendBrowserNotification("New Event Added", msg);
               }
               prevEventCount.current[calId] = count;
@@ -1092,24 +1093,34 @@ function Topbar({ page, ctx, setPage, onMenuClick }) {
                   No notifications yet
                 </div>
               ) : notifications.map((n, i) => (
-                <div key={i} style={{
-                  padding:"10px 16px", borderBottom:"1px solid var(--border2)",
-                  display:"flex", gap:10, alignItems:"flex-start",
-                }}>
-                  <span style={{ fontSize:18, flexShrink:0, marginTop:1 }}>{n.icon}</span>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:12, fontWeight:700, color:"var(--text)", marginBottom:2 }}>{n.title}</div>
-                    <div style={{ fontSize:11, color:"var(--text2)", lineHeight:1.5 }}>{n.body}</div>
-                    <div style={{ fontSize:10, color:"var(--text3)", marginTop:3 }}>
-                      {n.time ? new Date(n.time).toLocaleTimeString("en-PH", { hour:"2-digit", minute:"2-digit" }) : ""}
-                    </div>
-                  </div>
-                  <button className="btn-icon" style={{ fontSize:11, color:"var(--text3)", flexShrink:0, marginTop:1 }}
-                    onClick={() => ctx.setNotifications(prev => prev.filter((_, j) => j !== i))}>
-                    ✕
-                  </button>
-                </div>
-              ))}
+  <div key={i}
+    onClick={() => {
+      if (n.page) { setPage(n.page); setNotifOpen(false); }
+    }}
+    style={{
+      padding:"10px 16px", borderBottom:"1px solid var(--border2)",
+      display:"flex", gap:10, alignItems:"flex-start",
+      cursor: n.page ? "pointer" : "default",
+      transition:"background 0.15s",
+    }}
+    onMouseEnter={e => { if (n.page) e.currentTarget.style.background = "var(--surface2)"; }}
+    onMouseLeave={e => { e.currentTarget.style.background = ""; }}
+  >
+    <span style={{ fontSize:18, flexShrink:0, marginTop:1 }}>{n.icon}</span>
+    <div style={{ flex:1, minWidth:0 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:"var(--text)", marginBottom:2 }}>{n.title}</div>
+      <div style={{ fontSize:11, color:"var(--text2)", lineHeight:1.5 }}>{n.body}</div>
+      <div style={{ fontSize:10, color:"var(--text3)", marginTop:3, display:"flex", gap:8, alignItems:"center" }}>
+        {n.time ? new Date(n.time).toLocaleTimeString("en-PH", { hour:"2-digit", minute:"2-digit" }) : ""}
+        {n.page && <span style={{ color:"var(--accent)", fontWeight:600 }}>View →</span>}
+      </div>
+    </div>
+    <button className="btn-icon" style={{ fontSize:11, color:"var(--text3)", flexShrink:0, marginTop:1 }}
+      onClick={e => { e.stopPropagation(); ctx.setNotifications(prev => prev.filter((_, j) => j !== i)); }}>
+      ✕
+    </button>
+  </div>
+))}
             </div>
           </div>
         )}
