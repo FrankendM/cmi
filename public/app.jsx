@@ -110,7 +110,7 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
               const msg = role === "admin"
                 ? `You've been promoted to Admin in ${orgName}!`
                 : `Your role in ${orgName} has been updated to Member.`;
-                addNotification({ title: "Role Updated", body: msg, icon: "🏅", time: new Date(), page: "organizations" });
+                addNotification({ title: "Role Updated", body: msg, icon: "🏅", time: new Date(), page: "organizations", boldName: orgName });
               sendBrowserNotification("Role Updated", msg);
             }
           }
@@ -136,7 +136,7 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
                 } catch(e) { console.warn(`[Poller] GetOrganization (join req) failed for org ${orgId}:`, e.message); }
                 const newCount = prev === undefined ? count : count - prev;
                 const msg = `${newCount} pending join request${newCount > 1 ? "s" : ""} in ${orgName}.`;
-                addNotification({ title: "New Join Request", body: msg, icon: "📥", time: new Date(), page: "organizations" });
+                addNotification({ title: "New Join Request", body: msg, icon: "📥", time: new Date(), page: "organizations", action: "open-join-requests", orgId: String(numId), boldName: orgName });
                 sendBrowserNotification("New Join Request", msg);
               }
               prevJoinRequests.current[orgId] = count;
@@ -183,6 +183,7 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
                     icon: status === "accepted" ? "✅" : "❌",
                     time: new Date(),
                     page: "organizations",
+                    boldName: orgName || undefined,
                   });
                   sendBrowserNotification(
                     status === "accepted" ? "Request Approved" : status === "retracted" ? "Request Retracted" : "Request Rejected",
@@ -214,7 +215,7 @@ function useNotificationPoller(sessionId, currentUser, addNotification) {
                 const calName = cal.name || `Calendar #${calId}`;
                 const diff = count - prev;
                 const msg = `${diff} new event${diff > 1 ? "s" : ""} added to ${calName}.`;
-                addNotification({ title: "New Event 📅", body: msg, icon: "📅", time: new Date(), page: "calendar" });
+                addNotification({ title: "New Event 📅", body: msg, icon: "📅", time: new Date(), page: "calendar", boldName: calName });
                 sendBrowserNotification("New Event Added", msg);
               }
               prevEventCount.current[calId] = count;
@@ -1036,14 +1037,156 @@ function Sidebar({ page, setPage, ctx, isOpen, collapsed, setCollapsed }) {
   );
 }
 
+// ─── NOTIFICATION HELPERS ────────────────────────────────────────────────────
+// Renders notification body text with the boldName bolded wherever it appears.
+function NotifBody({ body, boldName, style }) {
+  if (!boldName || !body || !body.includes(boldName)) {
+    return <span style={style}>{body}</span>;
+  }
+  const parts = body.split(boldName);
+  return (
+    <span style={style}>
+      {parts.map((part, i) => (
+        <React.Fragment key={i}>
+          {part}
+          {i < parts.length - 1 && <strong style={{ color:"var(--text)", fontWeight:700 }}>{boldName}</strong>}
+        </React.Fragment>
+      ))}
+    </span>
+  );
+}
+
+// A single notification row — shared by dropdown and the View All modal.
+function NotifRow({ n, i, onNavigate, onDismiss, compact }) {
+  return (
+    <div
+      onClick={() => onNavigate(n)}
+      style={{
+        padding: compact ? "9px 14px" : "10px 16px",
+        borderBottom:"1px solid var(--border2)",
+        display:"flex", gap:10, alignItems:"flex-start",
+        cursor: (n.page || n.action) ? "pointer" : "default",
+        transition:"background 0.15s",
+      }}
+      onMouseEnter={e => { if (n.page || n.action) e.currentTarget.style.background = "var(--surface2)"; }}
+      onMouseLeave={e => { e.currentTarget.style.background = ""; }}
+    >
+      <span style={{ fontSize:18, flexShrink:0, marginTop:1 }}>{n.icon}</span>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:"var(--text)", marginBottom:2 }}>{n.title}</div>
+        <NotifBody body={n.body} boldName={n.boldName} style={{ fontSize:11, color:"var(--text2)", lineHeight:1.5 }} />
+        <div style={{ fontSize:10, color:"var(--text3)", marginTop:3, display:"flex", gap:8, alignItems:"center" }}>
+          {n.time ? new Date(n.time).toLocaleTimeString("en-PH", { hour:"2-digit", minute:"2-digit" }) : ""}
+          {(n.page || n.action) && <span style={{ color:"var(--accent)", fontWeight:600 }}>{n.action === "open-join-requests" ? "View Now →" : "View →"}</span>}
+        </div>
+      </div>
+      {onDismiss && (
+        <button className="btn-icon" style={{ fontSize:11, color:"var(--text3)", flexShrink:0, marginTop:1 }}
+          onClick={e => { e.stopPropagation(); onDismiss(i); }}>
+          ✕
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Full-history modal — groups notifications into "Today" and "Earlier".
+function NotificationsModal({ notifications, setNotifications, setPage, onClose, setNotifOpen }) {
+  const today = new Date();
+  const todayNotifs = notifications.filter(n => {
+    if (!n.time) return false;
+    const d = new Date(n.time);
+    return d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+  });
+  const earlierNotifs = notifications.filter(n => !todayNotifs.includes(n));
+
+  function handleNavigate(n) {
+    onClose();
+    if (n.action === "open-join-requests" && n.orgId) {
+      setPage("organizations");
+      window.__pendingJoinRequestsOrgId = n.orgId;
+      window.dispatchEvent(new CustomEvent("openJoinRequests", { detail: { orgId: n.orgId } }));
+    } else if (n.page) {
+      setPage(n.page);
+    }
+  }
+
+  function dismiss(globalIdx) {
+    setNotifications(prev => prev.filter((_, j) => j !== globalIdx));
+  }
+
+  function getGlobalIdx(n) {
+    return notifications.indexOf(n);
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal modal-lg" style={{ maxWidth:480, maxHeight:"80vh", display:"flex", flexDirection:"column" }}
+        onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">All Notifications</div>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            {notifications.length > 0 && (
+              <button className="btn-icon" style={{ fontSize:11, color:"var(--text3)" }}
+                onClick={() => setNotifications([])}>
+                Clear all
+              </button>
+            )}
+            <button className="close-btn" onClick={onClose}>✕</button>
+          </div>
+        </div>
+        <div style={{ flex:1, overflowY:"auto" }}>
+          {notifications.length === 0 ? (
+            <div style={{ padding:"48px 16px", textAlign:"center", color:"var(--text3)", fontSize:13 }}>
+              <div style={{ fontSize:32, marginBottom:10 }}>🔕</div>
+              No notifications yet
+            </div>
+          ) : (
+            <>
+              {todayNotifs.length > 0 && (
+                <>
+                  <div style={{ padding:"10px 16px 6px", fontSize:11, fontWeight:700, color:"var(--text3)", letterSpacing:.6, textTransform:"uppercase", borderBottom:"1px solid var(--border)" }}>Today</div>
+                  {todayNotifs.map((n) => (
+                    <NotifRow key={getGlobalIdx(n)} n={n} i={getGlobalIdx(n)} onNavigate={handleNavigate} onDismiss={dismiss} />
+                  ))}
+                </>
+              )}
+              {earlierNotifs.length > 0 && (
+                <>
+                  <div style={{ padding:"10px 16px 6px", fontSize:11, fontWeight:700, color:"var(--text3)", letterSpacing:.6, textTransform:"uppercase", borderBottom:"1px solid var(--border)" }}>Earlier</div>
+                  {earlierNotifs.map((n) => (
+                    <NotifRow key={getGlobalIdx(n)} n={n} i={getGlobalIdx(n)} onNavigate={handleNavigate} onDismiss={dismiss} />
+                  ))}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── TOPBAR ───────────────────────────────────────────────────────────────────
 function Topbar({ page, ctx, setPage, onMenuClick }) {
   const titles = {dashboard:"Dashboard",calendar:"Calendar View",events:"Events List",calendars:"Manage Calendars",organizations:"Organizations",tasks:"Task Tracker",ai:"AI Tools",settings:"Settings",about:"About SchedU"};
-  const { dataLoading, refreshCalendars, theme, toggleTheme, notifications, notifOpen, setNotifOpen, notifUnread, setNotifUnread } = ctx;
+  const { dataLoading, refreshCalendars, theme, toggleTheme, notifications, notifOpen, setNotifOpen, notifUnread, setNotifUnread, setModal } = ctx;
+  const [viewAllOpen, setViewAllOpen] = React.useState(false);
 
   function handleBellClick() {
     setNotifOpen(o => !o);
     if (!notifOpen) setNotifUnread(0);
+  }
+
+  function handleNavigate(n) {
+    setNotifOpen(false);
+    if (n.action === "open-join-requests" && n.orgId) {
+      setPage("organizations");
+      window.__pendingJoinRequestsOrgId = n.orgId;
+      window.dispatchEvent(new CustomEvent("openJoinRequests", { detail: { orgId: n.orgId } }));
+    } else if (n.page) {
+      setPage(n.page);
+    }
   }
 
   return (
@@ -1074,53 +1217,48 @@ function Topbar({ page, ctx, setPage, onMenuClick }) {
           }}
             onClick={e => e.stopPropagation()}
           >
+            {/* Header */}
             <div style={{ padding:"12px 16px", borderBottom:"1px solid var(--border)", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
               <span style={{ fontWeight:700, fontSize:13, color:"var(--text)" }}>Notifications</span>
               <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                 {notifications.length > 0 && (
-                  <button className="btn-icon" style={{ fontSize:11, color:"var(--text3)" }}
-                    onClick={() => ctx.setNotifications([])}>
-                    Clear all
-                  </button>
+                  <>
+                    <button className="btn-icon" style={{ fontSize:11, color:"var(--accent)", fontWeight:600 }}
+                      onClick={() => { setNotifOpen(false); setViewAllOpen(true); }}>
+                      View all
+                    </button>
+                    <button className="btn-icon" style={{ fontSize:11, color:"var(--text3)" }}
+                      onClick={() => ctx.setNotifications([])}>
+                      Clear all
+                    </button>
+                  </>
                 )}
                 <button className="btn-icon" style={{ fontSize:11 }} onClick={() => setNotifOpen(false)}>✕</button>
               </div>
             </div>
+
+            {/* List — capped at 5 in dropdown */}
             <div style={{ maxHeight:320, overflowY:"auto" }}>
               {notifications.length === 0 ? (
                 <div style={{ padding:"32px 16px", textAlign:"center", color:"var(--text3)", fontSize:13 }}>
                   <div style={{ fontSize:24, marginBottom:8 }}>🔕</div>
                   No notifications yet
                 </div>
-              ) : notifications.map((n, i) => (
-  <div key={i}
-    onClick={() => {
-      if (n.page) { setPage(n.page); setNotifOpen(false); }
-    }}
-    style={{
-      padding:"10px 16px", borderBottom:"1px solid var(--border2)",
-      display:"flex", gap:10, alignItems:"flex-start",
-      cursor: n.page ? "pointer" : "default",
-      transition:"background 0.15s",
-    }}
-    onMouseEnter={e => { if (n.page) e.currentTarget.style.background = "var(--surface2)"; }}
-    onMouseLeave={e => { e.currentTarget.style.background = ""; }}
-  >
-    <span style={{ fontSize:18, flexShrink:0, marginTop:1 }}>{n.icon}</span>
-    <div style={{ flex:1, minWidth:0 }}>
-      <div style={{ fontSize:12, fontWeight:700, color:"var(--text)", marginBottom:2 }}>{n.title}</div>
-      <div style={{ fontSize:11, color:"var(--text2)", lineHeight:1.5 }}>{n.body}</div>
-      <div style={{ fontSize:10, color:"var(--text3)", marginTop:3, display:"flex", gap:8, alignItems:"center" }}>
-        {n.time ? new Date(n.time).toLocaleTimeString("en-PH", { hour:"2-digit", minute:"2-digit" }) : ""}
-        {n.page && <span style={{ color:"var(--accent)", fontWeight:600 }}>View →</span>}
-      </div>
-    </div>
-    <button className="btn-icon" style={{ fontSize:11, color:"var(--text3)", flexShrink:0, marginTop:1 }}
-      onClick={e => { e.stopPropagation(); ctx.setNotifications(prev => prev.filter((_, j) => j !== i)); }}>
-      ✕
-    </button>
-  </div>
-))}
+              ) : notifications.slice(0, 5).map((n, i) => (
+                <NotifRow key={i} n={n} i={i} onNavigate={handleNavigate}
+                  onDismiss={(idx) => ctx.setNotifications(prev => prev.filter((_, j) => j !== idx))}
+                  compact />
+              ))}
+              {notifications.length > 5 && (
+                <div
+                  onClick={() => { setNotifOpen(false); setViewAllOpen(true); }}
+                  style={{ padding:"10px 16px", textAlign:"center", fontSize:12, color:"var(--accent)", fontWeight:600, cursor:"pointer", borderTop:"1px solid var(--border2)" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "var(--surface2)"}
+                  onMouseLeave={e => e.currentTarget.style.background = ""}
+                >
+                  View all {notifications.length} notifications →
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1132,6 +1270,17 @@ function Topbar({ page, ctx, setPage, onMenuClick }) {
       <button className="btn-icon" title="Refresh" onClick={refreshCalendars} style={{fontSize:13}} data-tutorial="topbar-refresh">
         {dataLoading?"⟳":"↻"}
       </button>
+
+      {/* View All modal */}
+      {viewAllOpen && (
+        <NotificationsModal
+          notifications={notifications}
+          setNotifications={ctx.setNotifications}
+          setPage={setPage}
+          onClose={() => setViewAllOpen(false)}
+          setNotifOpen={setNotifOpen}
+        />
+      )}
     </div>
   );
 }
@@ -1544,7 +1693,7 @@ function ModalRouter({ modal, ctx }) {
   if(type==="course-detail")     return <OrgDetailModal        ctx={ctx} orgId={data.courseId} org={{...data.course, type:"study-hub"}} />;
   if(type==="course-members")    return <OrgMembersModal       ctx={ctx} orgId={data.courseId} org={{...data.course, type:"study-hub"}} />;
   if(type==="create-org")        return <CreateGroupModal       ctx={ctx} />;
-  if(type==="manage-org")       return <ManageOrgModal       ctx={ctx} orgId={data.orgId} org={data.org} />;
+  if(type==="manage-org")       return <ManageOrgModal       ctx={ctx} orgId={data.orgId} org={data.org} initialSection={data.initialSection} />;
   if(type==="join-prompt")      return <JoinPromptModal      ctx={ctx} orgId={data.orgId} org={data.org} prompt={data.prompt} />;
   if(type==="org-detail")       return <OrgDetailModal       ctx={ctx} orgId={data.orgId} org={data.org} />;
   if(type==="org-members")      return <OrgMembersModal      ctx={ctx} orgId={data.orgId} org={data.org} />;

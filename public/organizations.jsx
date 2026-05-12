@@ -160,6 +160,49 @@ function OrganizationsTab({ ctx }) {
     return () => { delete window.__refreshOrgs; delete window.__refreshCourses; };
   }, []);
 
+  // ── Deep-link handler: open ManageOrgModal on join-requests when triggered from notification
+  React.useEffect(() => {
+    async function openPendingJoinRequests(orgId) {
+      const idStr = String(orgId);
+      // Try to use already-loaded org data first
+      let orgData = orgDetails[idStr];
+      if (!orgData) {
+        // Fetch directly if not loaded yet
+        try {
+          const d = await orgApi("GetOrganization", { organizationId: Number(idStr) }, sessionId);
+          const parsed = parseGroupDesc(d.description || "");
+          orgData = {
+            id: idStr,
+            name: d.name || "",
+            rawDescription: d.description || "",
+            description: parsed.description,
+            type: parsed.type,
+            genre: parsed.genre,
+            requiresJoinRequest: d.requiresJoinRequest || false,
+            createdAt: d.createdAt || null,
+          };
+        } catch(e) { return; }
+      }
+      setModal({ type: "manage-org", data: { orgId: idStr, org: orgData, initialSection: "join-requests" } });
+    }
+
+    // Handle if already on page when notification is clicked
+    function onOpenJoinRequests(e) {
+      window.__pendingJoinRequestsOrgId = null;
+      openPendingJoinRequests(e.detail.orgId);
+    }
+    window.addEventListener("openJoinRequests", onOpenJoinRequests);
+
+    // Handle if page was just navigated to (fresh mount) - check window flag
+    const pending = window.__pendingJoinRequestsOrgId;
+    if (pending) {
+      window.__pendingJoinRequestsOrgId = null;
+      openPendingJoinRequests(pending);
+    }
+
+    return () => window.removeEventListener("openJoinRequests", onOpenJoinRequests);
+  }, [sessionId, orgDetails, setModal]);
+
   // ── Load all orgs
   async function loadOrgs() {
     setLoading(true);
@@ -725,7 +768,7 @@ function CreateGroupModal({ ctx }) {
 }
 
 // ─── MANAGE ORG MODAL ─────────────────────────────────────────────────────────
-function ManageOrgModal({ ctx, orgId, org }) {
+function ManageOrgModal({ ctx, orgId, org, initialSection }) {
   const { sessionId, closeModal, showToast, myCalendars, currentUser } = ctx;
 
   const isStudyHub = org.type === "study-hub";
@@ -742,7 +785,7 @@ function ManageOrgModal({ ctx, orgId, org }) {
   const [calLoading,    setCalLoading]    = React.useState(true);
   const [toggleLoading, setToggleLoading] = React.useState(null);
 
-  const [activeSection, setActiveSection] = React.useState("calendars");
+  const [activeSection, setActiveSection] = React.useState(initialSection || "calendars");
 
   // Labels state
   const [orgLabels,      setOrgLabels]      = React.useState([]); // { id, name, color }
@@ -758,6 +801,7 @@ function ManageOrgModal({ ctx, orgId, org }) {
   const [joinRequests,          setJoinRequests]          = React.useState([]);
   const [joinRequestsLoading,   setJoinRequestsLoading]   = React.useState(false);
   const [requestActionLoading,  setRequestActionLoading]  = React.useState(null);
+  const [joinRequestSearch,     setJoinRequestSearch]     = React.useState("");
 
   const [currentPromptId,   setCurrentPromptId]   = React.useState(null);
   const [currentPromptText, setCurrentPromptText] = React.useState("");
@@ -856,7 +900,9 @@ function ManageOrgModal({ ctx, orgId, org }) {
             const u = await apiCall("/users.v2.UserService/GetUser", { userId: applicantUserId }, sessionId);
             applicantName = [u.firstName, u.middleName, u.lastName].filter(Boolean).join(" ") || applicantName;
           } catch(e) {}
-          return { joinRequestEventId: reqId, joinResponseEventId: req.joinResponseEventId, applicantUserId, applicantName, answer: resp.response || "" };
+          // Capture the timestamp of when the request was created
+          const requestedAt = req.createdAt || req.timestamp || req.time || null;
+          return { joinRequestEventId: reqId, joinResponseEventId: req.joinResponseEventId, applicantUserId, applicantName, answer: resp.response || "", requestedAt };
         } catch(e) { return null; }
       }));
       setJoinRequests(resolved.filter(Boolean));
@@ -1129,9 +1175,24 @@ function ManageOrgModal({ ctx, orgId, org }) {
           {/* JOIN REQUESTS */}
           {activeSection === "join-requests" && (
             <div>
-              <div style={{ fontSize:13, color:"var(--text2)", marginBottom:16, lineHeight:1.6 }}>
+              <div style={{ fontSize:13, color:"var(--text2)", marginBottom:14, lineHeight:1.6 }}>
                 Pending join requests for <strong style={{ color:"var(--text)" }}>{org.name}</strong>.
               </div>
+
+              {/* Search bar */}
+              {joinRequests.length > 0 && (
+                <div style={{ marginBottom:14, position:"relative" }}>
+                  <span style={{ position:"absolute", left:12, top:"50%", transform:"translateY(-50%)", fontSize:14, color:"var(--text3)", pointerEvents:"none" }}>🔍</span>
+                  <input
+                    className="form-input"
+                    placeholder="Search by name or answer…"
+                    value={joinRequestSearch}
+                    onChange={e => setJoinRequestSearch(e.target.value)}
+                    style={{ paddingLeft:36, width:"100%", boxSizing:"border-box" }}
+                  />
+                </div>
+              )}
+
               {joinRequestsLoading ? (
                 <div style={{ textAlign:"center", padding:"32px 0", color:"var(--text3)", fontSize:13 }}>Loading requests…</div>
               ) : joinRequests.length === 0 ? (
@@ -1139,36 +1200,77 @@ function ManageOrgModal({ ctx, orgId, org }) {
                   <div style={{ fontSize:32, marginBottom:8 }}>📭</div>
                   <div style={{ fontSize:13 }}>No pending join requests.</div>
                 </div>
-              ) : (
-                <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                  {joinRequests.map((req, i) => {
-                    const isActing = requestActionLoading === req.joinRequestEventId;
-                    return (
-                      <div key={req.joinRequestEventId || i} style={{ padding:"14px 16px", borderRadius:12, background:"var(--surface2)", border:"1px solid var(--border)" }}>
-                        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom: req.answer ? 10 : 0 }}>
-                          <div style={{ width:34, height:34, borderRadius:"50%", flexShrink:0, background: PALETTE[i%PALETTE.length]+"33", border:`1.5px solid ${PALETTE[i%PALETTE.length]}55`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, fontWeight:700, color: PALETTE[i%PALETTE.length] }}>
-                            {req.applicantName?.[0]?.toUpperCase() || "?"}
+              ) : (() => {
+                const q = joinRequestSearch.trim().toLowerCase();
+                const filtered = q
+                  ? joinRequests.filter(r =>
+                      r.applicantName?.toLowerCase().includes(q) ||
+                      r.answer?.toLowerCase().includes(q)
+                    )
+                  : joinRequests;
+
+                if (filtered.length === 0) return (
+                  <div style={{ textAlign:"center", padding:"32px 0", color:"var(--text3)" }}>
+                    <div style={{ fontSize:28, marginBottom:8 }}>🔍</div>
+                    <div style={{ fontSize:13 }}>No requests match "{joinRequestSearch}".</div>
+                  </div>
+                );
+
+                return (
+                  <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                    <div style={{ fontSize:12, color:"var(--text3)", marginBottom:2 }}>
+                      {filtered.length} request{filtered.length !== 1 ? "s" : ""}{q ? ` matching "${joinRequestSearch}"` : ""}
+                    </div>
+                    {filtered.map((req, i) => {
+                      const isActing = requestActionLoading === req.joinRequestEventId;
+                      // Parse the timestamp — handle proto Timestamp {seconds, nanos} or ISO string
+                      // API returns UTC+8 timestamps, subtract 8h so Manila locale displays correctly
+                      let requestedAtDate = null;
+                      if (req.requestedAt) {
+                        if (typeof req.requestedAt === "object" && req.requestedAt.seconds !== undefined) {
+                          requestedAtDate = new Date(Number(req.requestedAt.seconds) * 1000 - 8*60*60*1000);
+                        } else if (typeof req.requestedAt === "string" || typeof req.requestedAt === "number") {
+                          requestedAtDate = new Date(new Date(req.requestedAt).getTime() - 8*60*60*1000);
+                        }
+                      }
+                      const requestedAtStr = requestedAtDate && !isNaN(requestedAtDate)
+                        ? requestedAtDate.toLocaleString("en-PH", { month:"short", day:"numeric", year:"numeric", hour:"2-digit", minute:"2-digit", timeZone:"Asia/Manila" })
+                        : null;
+
+                      return (
+                        <div key={req.joinRequestEventId || i} style={{ padding:"14px 16px", borderRadius:12, background:"var(--surface2)", border:"1px solid var(--border)" }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom: (req.answer || requestedAtStr) ? 10 : 0 }}>
+                            <div style={{ width:36, height:36, borderRadius:"50%", flexShrink:0, background: PALETTE[i%PALETTE.length]+"33", border:`1.5px solid ${PALETTE[i%PALETTE.length]}55`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, fontWeight:700, color: PALETTE[i%PALETTE.length] }}>
+                              {req.applicantName?.[0]?.toUpperCase() || "?"}
+                            </div>
+                            <div style={{ flex:1, minWidth:0 }}>
+                              <div style={{ fontSize:14, fontWeight:700, color:"var(--text)" }}>{req.applicantName}</div>
+                              <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", marginTop:2 }}>
+                                <span style={{ fontSize:11, color:"var(--yellow)", fontWeight:600, background:"rgba(251,191,36,0.1)", border:"1px solid rgba(251,191,36,0.25)", borderRadius:4, padding:"1px 7px" }}>⏳ Pending</span>
+                                {requestedAtStr && (
+                                  <span style={{ fontSize:11, color:"var(--text3)", display:"flex", alignItems:"center", gap:3 }}>
+                                    🕐 {requestedAtStr}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div style={{ display:"flex", gap:8, flexShrink:0 }}>
+                              <button className="btn btn-sm" style={{ background:"rgba(52,211,153,0.15)", color:"var(--green)", border:"1px solid rgba(52,211,153,0.35)", fontWeight:700 }} disabled={isActing} onClick={() => handleApprove(req)}>{isActing ? "…" : "✓ Approve"}</button>
+                              <button className="btn btn-danger btn-sm" disabled={isActing} onClick={() => handleReject(req)}>{isActing ? "…" : "✕ Reject"}</button>
+                            </div>
                           </div>
-                          <div style={{ flex:1 }}>
-                            <div style={{ fontSize:14, fontWeight:700, color:"var(--text)" }}>{req.applicantName}</div>
-                            <div style={{ fontSize:11, color:"var(--text3)" }}>Pending approval</div>
-                          </div>
-                          <div style={{ display:"flex", gap:8 }}>
-                            <button className="btn btn-sm" style={{ background:"rgba(52,211,153,0.15)", color:"var(--green)", border:"1px solid rgba(52,211,153,0.35)", fontWeight:700 }} disabled={isActing} onClick={() => handleApprove(req)}>{isActing ? "…" : "✓ Approve"}</button>
-                            <button className="btn btn-danger btn-sm" disabled={isActing} onClick={() => handleReject(req)}>{isActing ? "…" : "✕ Reject"}</button>
-                          </div>
+                          {req.answer && (
+                            <div style={{ padding:"10px 12px", borderRadius:8, background:"var(--surface3)", border:"1px solid var(--border2)", fontSize:13, color:"var(--text2)", lineHeight:1.6, whiteSpace:"pre-wrap" }}>
+                              <div style={{ fontSize:10, fontWeight:700, letterSpacing:1.2, textTransform:"uppercase", color:"var(--text3)", marginBottom:5 }}>📝 Their Answer</div>
+                              {req.answer}
+                            </div>
+                          )}
                         </div>
-                        {req.answer && (
-                          <div style={{ marginTop:10, padding:"10px 12px", borderRadius:8, background:"var(--surface3)", border:"1px solid var(--border2)", fontSize:13, color:"var(--text2)", lineHeight:1.6, whiteSpace:"pre-wrap" }}>
-                            <div style={{ fontSize:10, fontWeight:700, letterSpacing:1.2, textTransform:"uppercase", color:"var(--text3)", marginBottom:5 }}>📝 Their Answer</div>
-                            {req.answer}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           )}
 
