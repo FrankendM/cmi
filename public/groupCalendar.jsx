@@ -21,6 +21,7 @@ function CalendarsPage({ ctx }) {
   } = ctx;
 
   const [tab, setTab] = React.useState("all");
+  const [labelFilter, setLabelFilter] = React.useState("all");
   const [confirmDlg, setConfirmDlg] = React.useState(null);
 
   // Sort by ID descending so newest calendars appear first.
@@ -28,11 +29,21 @@ function CalendarsPage({ ctx }) {
   // .slice() prevents mutating the original state array.
   const cals = myCalendars().slice().sort((a, b) => Number(b.id) - Number(a.id));
 
-  const filtered = tab === "all"
+  // Primary tab filter
+  let filtered = tab === "all"
     ? cals
     : tab === "owned"
       ? cals.filter(c => c.isOwner)
       : cals.filter(c => !c.isOwner);
+
+  // Secondary label filter — only applied when a specific label is selected
+  if (labelFilter !== "all") {
+    filtered = filtered.filter(c => c.label === labelFilter);
+  }
+
+  // In My Calendars / Joined tabs with no label filter active,
+  // hide unlabeled ("none") calendars so they only appear in All
+  
 
   // Sub-feature: Delete Calendar
   async function doDelete(cal) {
@@ -68,6 +79,16 @@ function CalendarsPage({ ctx }) {
     showToast("Color updated!");
   }
 
+  function handleLabelChange(calId, newLabel) {
+    const prefs = loadCalPrefs();
+    prefs[calId] = { ...(prefs[calId] || {}), label: newLabel };
+    saveCalPrefs(prefs);
+    setCalendars(prev =>
+      prev.map(c => c.id === calId ? { ...c, label: newLabel } : c)
+    );
+    showToast("Calendar label updated!");
+  }
+
   return (
     <div>
       {confirmDlg && (
@@ -78,9 +99,29 @@ function CalendarsPage({ ctx }) {
       )}
       <div className="tabs">
         {[["all","All"],["owned","My Calendars"],["subscribed","Joined"]].map(([t,l]) => (
-          <div key={t} className={`tab${tab===t?" active":""}`} onClick={() => setTab(t)}>{l}</div>
+          <div key={t} className={`tab${tab===t?" active":""}`} onClick={() => { setTab(t); setLabelFilter("all"); }}>{l}</div>
         ))}
       </div>
+
+      {tab !== "all" && (
+        <div className="tabs" style={{ marginTop: 8 }}>
+          {[
+            ["all",          "All Labels"],
+            ["organization", "🏢 Organization"],
+            ["subject",      "📚 Subject"],
+            ["personal",     "👤 Personal"],
+          ].map(([v, l]) => (
+            <div
+              key={v}
+              className={`tab${labelFilter === v ? " active" : ""}`}
+              style={{ fontSize: 12 }}
+              onClick={() => setLabelFilter(v)}
+            >
+              {l}
+            </div>
+          ))}
+        </div>
+      )}
 
       {dataLoading && (
         <div style={{ textAlign:"center", padding:"30px 0", color:"var(--text3)", fontSize:13 }}>
@@ -113,6 +154,23 @@ function CalendarsPage({ ctx }) {
                         boxShadow:c.color===col?"0 0 0 1px "+col:"none", transition:"all .15s" }} />
                   ))}
                 </div>
+              </div>
+
+              {/* Sub-feature: Calendar Label */}
+              <div style={{ marginBottom:10 }}>
+                <div style={{ fontSize:11, color:"var(--text3)", fontWeight:600, marginBottom:5 }}>LABEL</div>
+                <select
+                  value={c.label || "none"}
+                  onChange={(e) => handleLabelChange(c.id, e.target.value)}
+                  className="input"
+                  style={{ fontSize:12, padding:"4px 8px", width:"100%", background:"var(--surface2)",
+                    border:"1px solid var(--border2)", borderRadius:6, color:"var(--text)", cursor:"pointer" }}
+                >
+                  <option value="none">None</option>
+                  <option value="organization">🏢 Organization</option>
+                  <option value="subject">📚 Subject</option>
+                  <option value="personal">👤 Personal</option>
+                </select>
               </div>
 
               {/* Action buttons */}
@@ -168,7 +226,13 @@ function CreateCalendarModal({ ctx }) {
       }, sessionId);
       // Track the new calendar ID locally
       const newCalId = res.calendarId;
-      if (newCalId) addOwnedCalendarId(currentUser.id, newCalId);
+      if (newCalId) {
+        addOwnedCalendarId(currentUser.id, newCalId);
+        // New calendars default to "none" label — only visible in "All" until labeled
+        const prefs = loadCalPrefs();
+        prefs[String(newCalId)] = { ...(prefs[String(newCalId)] || {}), label: "none" };
+        saveCalPrefs(prefs);
+      }
       showToast(`"${form.name}" created!`);
       await refreshCalendars();
       closeModal();
